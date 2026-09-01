@@ -26,10 +26,22 @@ export interface SessionRecord {
   timestamp: number;
 }
 
+export interface BookingRequest {
+  id: string;
+  customer_name: string;
+  phone: string;
+  station_id: string;
+  slot_time: string;
+  date: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  timestamp: number;
+}
+
 export function useStationManager() {
   const [stations] = useState<Station[]>(() => buildStations());
   const [bridgeUrl, setBridgeUrl] = useState(DEFAULT_BRIDGE_URL);
   const [sessions, setSessions] = useState<Record<string, Session>>({});
+  const [bookings, setBookings] = useState<BookingRequest[]>([]);
   
   const processedSessionsRef = useRef<Set<string>>(new Set());
 
@@ -65,6 +77,60 @@ export function useStationManager() {
       /* ignore */
     }
   }, [history]);
+
+  // --- ONLINE BOOKINGS SYNC FROM BRIDGE ---
+  const fetchBookings = useCallback(async () => {
+    try {
+      const res = await fetch(`${bridgeRef.current}/api/bookings`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === "success" && Array.isArray(data.bookings)) {
+          setBookings(data.bookings);
+        }
+      }
+    } catch (err) {
+      // Bridge unavailable or offline
+    }
+  }, []);
+
+  // Auto-poll online bookings every 10 seconds
+  useEffect(() => {
+    fetchBookings();
+    const interval = setInterval(fetchBookings, 10000);
+    return () => clearInterval(interval);
+  }, [fetchBookings]);
+
+  const approveBooking = useCallback(async (booking: BookingRequest) => {
+    try {
+      const res = await fetch(`${bridgeRef.current}/api/bookings/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: booking.id, action: "APPROVE" }),
+      });
+      if (res.ok) {
+        toast.success(`Booking approved for ${booking.customer_name}`);
+        fetchBookings();
+      }
+    } catch (err) {
+      toast.error("Failed to approve booking via Bridge");
+    }
+  }, [fetchBookings]);
+
+  const rejectBooking = useCallback(async (bookingId: string) => {
+    try {
+      const res = await fetch(`${bridgeRef.current}/api/bookings/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: bookingId, action: "REJECT" }),
+      });
+      if (res.ok) {
+        toast.info("Booking request rejected");
+        fetchBookings();
+      }
+    } catch (err) {
+      toast.error("Failed to reject booking via Bridge");
+    }
+  }, [fetchBookings]);
 
   const deleteSessionHistory = useCallback((recordId: string) => {
     setHistory((prev) => prev.filter((item) => item.id !== recordId));
@@ -264,6 +330,10 @@ export function useStationManager() {
     bridgeUrl,
     sessions,
     history,
+    bookings,
+    fetchBookings,
+    approveBooking,
+    rejectBooking,
     setBridgeUrl: setBridgeUrlCallback,
     start,
     extend,

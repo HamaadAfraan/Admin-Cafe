@@ -21,12 +21,16 @@ import {
   Volume1,
   Volume2,
   VolumeX,
-  CircleDot
+  CircleDot,
+  CalendarClock,
+  CheckCircle2,
+  XCircle
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { formatDuration, KIND_LABEL, type Session, type Station } from "@/lib/stations";
 import { cn } from "@/lib/utils";
+import type { BookingRequest } from "@/hooks/useStationManager";
 
 const ICONS = { ps5: Gamepad2, ps4: Gamepad2, pc: Monitor, sim: Car } as const;
 const PRESETS = [30, 60, 120];
@@ -78,6 +82,9 @@ function getCategorySpecificTheme(kind: string, stationId: string, isVip: boolea
 type Props = {
   station: Station;
   session?: Session | undefined;
+  pendingBooking?: BookingRequest | undefined;
+  onApproveBooking?: (booking: BookingRequest) => void;
+  onRejectBooking?: (bookingId: string) => void;
   onStart: (minutes: number, customer: string, playerCount?: number) => void;
   onExtend: (minutes: number) => void;
   onTogglePause: () => void;
@@ -88,6 +95,9 @@ type Props = {
 export function StationCard({
   station,
   session,
+  pendingBooking,
+  onApproveBooking,
+  onRejectBooking,
   onStart,
   onExtend,
   onTogglePause,
@@ -100,7 +110,6 @@ export function StationCard({
   const [custom, setCustom] = useState(false);
   const [playerCount, setPlayerCount] = useState<number>(2);
 
-  // Single trigger guard
   const lockTriggeredRef = useRef(false);
 
   const Icon = ICONS[station.kind] || Gamepad2;
@@ -114,14 +123,20 @@ export function StationCard({
 
   const theme = getCategorySpecificTheme(station.kind, station.id, isVip);
 
-  // Reset guard on session state change
+  // Auto-fill customer info if pending booking exists
+  useEffect(() => {
+    if (pendingBooking && !session) {
+      setCustomerName(pendingBooking.customer_name);
+      setCustomerPhone(pendingBooking.phone);
+    }
+  }, [pendingBooking, session]);
+
   useEffect(() => {
     if (session) {
       lockTriggeredRef.current = false;
     }
   }, [session?.startTime]);
 
-  // Clean Timer Check
   useEffect(() => {
     if (session && session.remainingMs <= 0 && !lockTriggeredRef.current) {
       lockTriggeredRef.current = true;
@@ -192,14 +207,57 @@ export function StationCard({
           <span
             className={cn(
               "rounded-full border px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider shadow-sm",
-              !session && "border-emerald-500/60 bg-emerald-950/80 text-emerald-300",
+              !session && !pendingBooking && "border-emerald-500/60 bg-emerald-950/80 text-emerald-300",
+              !session && pendingBooking && "border-purple-500/80 bg-purple-950/90 text-purple-300 animate-pulse",
               session && !expiring && "border-amber-500/60 bg-amber-950/80 text-amber-300",
               expiring && "border-red-500/80 bg-red-950/90 text-red-300",
             )}
           >
-            {!session ? "Available" : expiring ? "Expiring" : "In Session"}
+            {!session ? (pendingBooking ? "Booking Req" : "Available") : expiring ? "Expiring" : "In Session"}
           </span>
         </div>
+
+        {/* ONLINE BOOKING NOTIFICATION OVERLAY */}
+        {!session && pendingBooking && (
+          <div className="mt-3 p-2.5 rounded-lg border border-purple-500/50 bg-purple-950/40 backdrop-blur space-y-2">
+            <div className="flex items-center justify-between text-xs text-purple-200 font-bold">
+              <span className="flex items-center gap-1">
+                <CalendarClock className="size-3.5 text-purple-400" />
+                Online Booking Requested
+              </span>
+              <span className="text-[10px] text-purple-300 bg-purple-900/60 px-1.5 py-0.5 rounded">
+                {pendingBooking.slot_time || "Today"}
+              </span>
+            </div>
+            <div className="text-xs text-white">
+              <p className="font-black text-amber-300">{pendingBooking.customer_name}</p>
+              <p className="text-[11px] text-slate-300 flex items-center gap-1">
+                <Phone className="size-3" /> {pendingBooking.phone || "No phone provided"}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5 pt-1">
+              <Button
+                size="sm"
+                className="h-7 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white"
+                onClick={() => {
+                  if (onApproveBooking) onApproveBooking(pendingBooking);
+                }}
+              >
+                <CheckCircle2 className="size-3 mr-1" /> Accept
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs font-bold border-red-500/60 text-red-400 hover:bg-red-950"
+                onClick={() => {
+                  if (onRejectBooking) onRejectBooking(pendingBooking.id);
+                }}
+              >
+                <XCircle className="size-3 mr-1" /> Reject
+              </Button>
+            </div>
+          </div>
+        )}
 
         {session ? (
           <div className="mt-4 space-y-3">

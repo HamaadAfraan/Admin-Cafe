@@ -1,9 +1,20 @@
 import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Activity, CircleDot, MonitorSmartphone, FileText, Search, X, IndianRupee, Calendar } from "lucide-react";
+import { 
+  Activity, 
+  CircleDot, 
+  MonitorSmartphone, 
+  FileText, 
+  Search, 
+  X, 
+  IndianRupee, 
+  Calendar,
+  CalendarClock
+} from "lucide-react";
 import { StationCard } from "@/components/StationCard";
 import { SettingsDialog } from "@/components/SettingsDialog";
-import { useStationManager, type SessionRecord } from "@/hooks/useStationManager";
+import { BookingsModal } from "@/components/BookingsModal";
+import { useStationManager, type SessionRecord, type BookingRequest } from "@/hooks/useStationManager";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -91,6 +102,9 @@ function Dashboard() {
   const [recordSearch, setRecordSearch] = useState("");
   const [recordCategory, setRecordCategory] = useState("all");
 
+  // Online Bookings Modal State
+  const [showBookings, setShowBookings] = useState(false);
+
   const stations = CAFE_STATIONS;
 
   const visible = useMemo(
@@ -99,6 +113,8 @@ function Dashboard() {
   );
 
   const active = Object.keys(mgr.sessions).length;
+  const pendingBookingsCount = (mgr.bookings || []).filter((b) => b.status === "PENDING").length;
+
   const stats = [
     { label: "Total Stations", value: String(stations.length), icon: MonitorSmartphone },
     { label: "Active Sessions", value: String(active), icon: Activity, tone: "warning" },
@@ -202,7 +218,23 @@ function Dashboard() {
 
             {/* TOP HEADER BUTTONS */}
             <div className="flex items-center gap-2">
-              {/* 1. RECORDS BUTTON */}
+              {/* 1. ONLINE BOOKINGS BUTTON WITH BADGE */}
+              <Button
+                variant="outline"
+                size="sm"
+                className="relative border-purple-500/60 bg-purple-950/40 text-purple-300 hover:bg-purple-600 hover:text-white font-bold h-9 text-xs transition-all shadow-md"
+                onClick={() => setShowBookings(true)}
+              >
+                <CalendarClock className="size-4 mr-1.5 text-purple-400" />
+                Bookings
+                {pendingBookingsCount > 0 && (
+                  <span className="ml-1.5 rounded-full bg-purple-500 px-1.5 py-0.2 text-[10px] font-black text-white animate-pulse">
+                    {pendingBookingsCount}
+                  </span>
+                )}
+              </Button>
+
+              {/* 2. RECORDS BUTTON */}
               <Button
                 variant="outline"
                 size="sm"
@@ -212,7 +244,7 @@ function Dashboard() {
                 <FileText className="size-4 mr-1.5" /> Records
               </Button>
 
-              {/* 2. EXISTING NETWORK SETTINGS DIALOG */}
+              {/* 3. EXISTING NETWORK SETTINGS DIALOG */}
               <SettingsDialog
                 stations={stations}
                 bridgeUrl={mgr.bridgeUrl}
@@ -271,29 +303,46 @@ function Dashboard() {
 
       <section className="mx-auto max-w-[1500px] px-5 py-6">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {visible.map((station) => (
-            <StationCard
-              key={station.id}
-              station={station}
-              session={mgr.sessions[station.id]}
-              onStart={(minutes, customer, playerCount) => {
-                // ✅ CLEAN START: Pure local session timer start (TV command nahi jayegi)
-                mgr.start(station.id, minutes, customer, playerCount);
-              }}
-              onExtend={(minutes) => mgr.extend(station.id, minutes)}
-              onTogglePause={() => mgr.togglePause(station.id)}
-              onForceLock={() => {
-                // ✅ CLEAN LOCK: Direct Backend LOCK call
-                mgr.forceLock(station.id);
-                if (station.ip) {
-                  handleControl(station.id, "LOCK", station.ip);
-                }
-              }}
-              onControl={(stId, action, ip) => handleControl(stId, action, ip)}
-            />
-          ))}
+          {visible.map((station) => {
+            // Find if there is a pending booking for this specific station
+            const pendingForStation = (mgr.bookings || []).find(
+              (b) => b.station_id === station.id && b.status === "PENDING"
+            );
+
+            return (
+              <StationCard
+                key={station.id}
+                station={station}
+                session={mgr.sessions[station.id]}
+                pendingBooking={pendingForStation}
+                onApproveBooking={(b) => mgr.approveBooking(b)}
+                onRejectBooking={(bId) => mgr.rejectBooking(bId)}
+                onStart={(minutes, customer, playerCount) => {
+                  mgr.start(station.id, minutes, customer, playerCount);
+                }}
+                onExtend={(minutes) => mgr.extend(station.id, minutes)}
+                onTogglePause={() => mgr.togglePause(station.id)}
+                onForceLock={() => {
+                  mgr.forceLock(station.id);
+                  if (station.ip) {
+                    handleControl(station.id, "LOCK", station.ip);
+                  }
+                }}
+                onControl={(stId, action, ip) => handleControl(stId, action, ip)}
+              />
+            );
+          })}
         </div>
       </section>
+
+      {/* --- MASTER ONLINE BOOKINGS MODAL --- */}
+      <BookingsModal
+        open={showBookings}
+        onOpenChange={setShowBookings}
+        bookings={mgr.bookings || []}
+        onApprove={(b) => mgr.approveBooking(b)}
+        onReject={(bId) => mgr.rejectBooking(bId)}
+      />
 
       {/* --- MASTER CUSTOMER RECORDS MODAL --- */}
       {showRecords && (

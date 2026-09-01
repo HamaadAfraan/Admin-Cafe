@@ -1,183 +1,215 @@
 import os
-import platform
-import shutil
-import socket
-import subprocess
 import time
-from flask import Flask, request, jsonify, send_file, send_from_directory
+import json
+import logging
+import subprocess
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 
+# --- CONFIGURATION & LOGGING SETUP ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app)  # Enable Cross-Origin requests for local & web dashboard
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DIST_DIR = os.path.join(BASE_DIR, ".output", "public")
-LOCK_IMAGE_PATH = os.path.join(BASE_DIR, "assets", "lock.jpg")
+BOOKINGS_FILE = os.path.join(BASE_DIR, "bookings.json")
 
-LAST_REQUEST_TIMES = {}
+# Persistent State Management
+PC_STATES = {}       # Traces PC unlocks/locks
+ACTIVE_SESSIONS = {} # Live session tracker for TVs and Simulators
 
-# PC States Tracking Memory
-PC_STATES = {
-    "PC-1": "LOCKED",
-    "PC-2": "LOCKED",
-    "PC-3": "LOCKED",
-    "PC-4": "LOCKED"
-}
+# --- HELPER FUNCTIONS FOR BOOKINGS FILE ---
+def load_bookings():
+    if os.path.exists(BOOKINGS_FILE):
+        try:
+            with open(BOOKINGS_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"Error reading bookings file: {e}")
+            return []
+    return []
 
-def get_local_ip():
-    """Dynamically get the local LAN IP address of this Mac."""
+def save_bookings(bookings):
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
-def get_adb_binary():
-    if platform.system() == "Windows":
-        win_adb = os.path.join(BASE_DIR, "bin", "adb.exe")
-        return win_adb if os.path.exists(win_adb) else "adb"
-    else:
-        mac_bin_adb = os.path.join(BASE_DIR, "bin", "adb")
-        brew_adb = "/opt/homebrew/bin/adb"
-        usr_adb = "/usr/local/bin/adb"
-        system_adb = shutil.which("adb")
-
-        if os.path.exists(mac_bin_adb): return mac_bin_adb
-        elif os.path.exists(brew_adb): return brew_adb
-        elif os.path.exists(usr_adb): return usr_adb
-        elif system_adb: return system_adb
-        return "adb"
-
-ADB_BIN = get_adb_binary()
-
-def run_adb(ip, command, fast=True):
-    try:
-        timeout_sec = 2 if fast else 4
-        full_cmd = f'"{ADB_BIN}" -s {ip}:5555 {command}'
-        result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=timeout_sec)
-        return result.stdout.strip()
+        with open(BOOKINGS_FILE, "w") as f:
+            json.dump(bookings, f, indent=2)
     except Exception as e:
-        return str(e)
+        logging.error(f"Error saving bookings file: {e}")
 
-def switch_to_hdmi1(ip):
-    run_adb(ip, "shell am force-stop com.mobisystems.fileman", fast=True)
-    google_intent = 'shell am start -a android.intent.action.VIEW -d "content://android.media.tv/passthrough/com.google.android.tvinput%2F.hardware.HardwareInputService%2FHW0" -f 0x10000000'
-    run_adb(ip, google_intent, fast=True)
+# --- ADB EXECUTION WRAPPER ---
+def run_adb_command(ip, command):
+    """Executes ADB shell commands to target TV IP safely"""
+    try:
+        # Step 1: Ensure connected
+        subprocess.run(["adb", "connect", f"{ip}:5555"], timeout=3, capture_output=True)
+        # Step 2: Execute command
+        full_cmd = f"adb -s {ip}:5555 {command}"
+        result = subprocess.run(full_cmd, shell=True, timeout=5, capture_output=True, text=True)
+        logging.info(f"ADB output [{ip}]: {result.stdout.strip()}")
+        return True
+    except Exception as e:
+        logging.error(f"ADB Error on {ip}: {e}")
+        return False
 
-def apply_lock(ip):
-    print(f"[EXECUTING LOCK] Target IP: {ip}")
-    run_adb(ip, "shell input keyevent 224", fast=True)
+# --- API ROUTES ---
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Simple ping check for backend availability"""
+    return jsonify({"status": "online", "timestamp": time.time()}), 200
+
+# 1. PUBLIC STATUS API (Customer Website Realtime Sync)
+@app.route('/api/public-status', methods=['GET'])
+def get_public_status():
+    """Returns status of all stations (BUSY vs AVAILABLE) for customer app"""
+    status_map = {}
+    now = time.time()
     
-    tv_sdcard_dir = "/sdcard/lock.jpg"
+    # Active TV/Sim sessions check
+    for station_id, session in list(ACTIVE_SESSIONS.items()):
+        if session.get("end_time", 0) > now:
+            status_map[station_id] = "BUSY"
+        else:
+            del ACTIVE_SESSIONS[station_id]
+            
+    # Active PC state check
+    for pc_id, state in PC_STATES.items():
+        if state == "UNLOCKED":
+            status_map[pc_id] = "BUSY"
 
-    if os.path.exists(LOCK_IMAGE_PATH):
-        run_adb(ip, f'push "{LOCK_IMAGE_PATH}" {tv_sdcard_dir}', fast=False)
-        intent_cmd = f'shell am start -a android.intent.action.VIEW -d "file://{tv_sdcard_dir}" -t "image/*" -f 0x10000000'
-        run_adb(ip, intent_cmd, fast=True)
+    return jsonify({
+        "status": "success", 
+        "busy_stations": status_map
+    }), 200
 
-KEY_EVENTS = {
-    "HOME": "shell input keyevent 3",
-    "BACK": "shell input keyevent 4",
-    "UP": "shell input keyevent 19",
-    "DOWN": "shell input keyevent 20",
-    "LEFT": "shell input keyevent 21",
-    "RIGHT": "shell input keyevent 22",
-    "OK": "shell input keyevent 23",
-    "VOL_UP": "shell input keyevent 24",
-    "VOL_DOWN": "shell input keyevent 25",
-    "MUTE": "shell input keyevent 164",
-    "SLEEP": "shell input keyevent 223",
-    "POWER_OFF": "shell input keyevent 223",
-    "WAKE": "shell input keyevent 224",
-    "WAKEUP": "shell input keyevent 224",
-    "POWER_ON": "shell input keyevent 224",
-    "UNLOCK": "shell input keyevent 224"
-}
-
-# --- STATIC FRONTEND DASHBOARD ROUTE ---
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
-def serve_frontend(path):
-    target_file = os.path.join(DIST_DIR, path)
-    if path != "" and os.path.exists(target_file):
-        return send_from_directory(DIST_DIR, path)
-    
-    index_path = os.path.join(DIST_DIR, 'index.html')
-    if os.path.exists(index_path):
-        return send_from_directory(DIST_DIR, 'index.html')
-    
-    return "Frontend Build Not Found! Please ensure index.html exists in .output/public.", 404
-
-# --- API ENDPOINTS ---
-@app.route('/lock.jpg', methods=['GET'])
-def get_lock_image():
-    if os.path.exists(LOCK_IMAGE_PATH):
-        return send_file(LOCK_IMAGE_PATH, mimetype='image/jpeg')
-    return "Image not found", 404
-
-@app.route('/api/pc-status', methods=['GET'])
-def get_pc_status():
-    station_id = request.args.get('station_id', 'PC-1').upper()
-    return jsonify({"status": PC_STATES.get(station_id, "LOCKED")})
-
+# 2. HARDWARE CONTROL API (StationCard & Manager execution)
 @app.route('/api/control', methods=['POST', 'OPTIONS'])
-def handle_control():
+def control_station():
     if request.method == 'OPTIONS':
         return jsonify({"status": "ok"}), 200
 
     data = request.json or {}
-    ip = data.get('ip', '')
-    action = str(data.get('action', '')).upper().strip()
-    station_id = str(data.get('station_id', 'Unknown')).upper()
+    station_id = data.get("station_id")
+    action = data.get("action")
+    ip = data.get("ip")
+    minutes = int(data.get("minutes", 60))
 
-    req_key = f"{station_id}_{action}"
-    now = time.time()
-    if req_key in LAST_REQUEST_TIMES and (now - LAST_REQUEST_TIMES[req_key]) < 0.5:
-        return jsonify({"status": "success", "message": "Ignored fast duplicate"}), 200
-    
-    LAST_REQUEST_TIMES[req_key] = now
+    if not station_id or not action:
+        return jsonify({"status": "error", "message": "Missing station_id or action"}), 400
 
-    print(f"[REQUEST] Station: {station_id} | Action: {action} | IP: {ip}")
+    logging.info(f"[CONTROL COMMAND] Station: {station_id} | Action: {action} | IP: {ip}")
 
-    # PC Control Logic
-    if "PC" in station_id:
-        if action in ["START", "PLAY", "RESUME", "INIT", "UNLOCK"]:
-            PC_STATES[station_id] = "UNLOCKED"
-            return jsonify({"status": "success", "message": f"{station_id} UNLOCKED"}), 200
-        elif action in ["LOCK", "EXPIRE", "SESSION_EXPIRE", "EXPIRE_LOCK", "STOP", "END"]:
-            PC_STATES[station_id] = "LOCKED"
-            return jsonify({"status": "success", "message": f"{station_id} LOCKED"}), 200
+    # Session Time Tracking Updates
+    if action in ["START", "PLAY", "RESUME", "INIT"]:
+        ACTIVE_SESSIONS[station_id] = {
+            "start_time": time.time(),
+            "end_time": time.time() + (minutes * 60)
+        }
+    elif action in ["LOCK", "EXPIRE", "STOP", "END", "POWER_OFF"]:
+        if station_id in ACTIVE_SESSIONS:
+            del ACTIVE_SESSIONS[station_id]
 
-    # Android TV Control Logic
+    # Handle ADB actions for TV display management
     if ip:
-        if action in ["START", "PLAY", "RESUME", "INIT"]:
-            run_adb(ip, "shell input keyevent 224", fast=True)
-            run_adb(ip, "shell am force-stop com.mobisystems.fileman", fast=True)
-            return jsonify({"status": "success", "message": f"{station_id} Session Started"}), 200
+        if action == "POWER_ON":
+            run_adb_command(ip, "shell input keyevent 26") # KEYCODE_POWER / WAKEUP
+        elif action == "POWER_OFF":
+            run_adb_command(ip, "shell input keyevent 223") # KEYCODE_SLEEP
+        elif action == "HDMI":
+            run_adb_command(ip, "shell input keyevent 243") # KEYCODE_TV_INPUT_HDMI_1
+        elif action == "HDMI2":
+            run_adb_command(ip, "shell input keyevent 244") # KEYCODE_TV_INPUT_HDMI_2
+        elif action == "LOCK":
+            # Display Lockscreen asset/app or turn screen off
+            run_adb_command(ip, "shell am start -a android.intent.action.MAIN -c android.intent.category.HOME")
+        elif action == "UP":
+            run_adb_command(ip, "shell input keyevent 19")
+        elif action == "DOWN":
+            run_adb_command(ip, "shell input keyevent 20")
+        elif action == "LEFT":
+            run_adb_command(ip, "shell input keyevent 21")
+        elif action == "RIGHT":
+            run_adb_command(ip, "shell input keyevent 22")
+        elif action == "OK":
+            run_adb_command(ip, "shell input keyevent 66")
+        elif action == "HOME":
+            run_adb_command(ip, "shell input keyevent 3")
+        elif action == "BACK":
+            run_adb_command(ip, "shell input keyevent 4")
+        elif action == "MUTE":
+            run_adb_command(ip, "shell input keyevent 164")
+        elif action == "VOL_UP":
+            run_adb_command(ip, "shell input keyevent 24")
+        elif action == "VOL_DOWN":
+            run_adb_command(ip, "shell input keyevent 25")
 
-        elif action in ["HDMI", "HDMI1"]:
-            switch_to_hdmi1(ip)
-            return jsonify({"status": "success", "message": f"{station_id} SWITCHED TO HDMI 1"}), 200
+    return jsonify({"status": "success", "station_id": station_id, "action": action}), 200
 
-        elif action in ["LOCK", "EXPIRE", "SESSION_EXPIRE", "EXPIRE_LOCK", "STOP", "END"]:
-            apply_lock(ip)
-            return jsonify({"status": "success", "message": f"{station_id} LOCKED"}), 200
+# 3. ONLINE BOOKINGS API (Customer Website & Admin Dashboard)
+@app.route('/api/bookings', methods=['GET', 'POST', 'OPTIONS'])
+def handle_bookings():
+    if request.method == 'OPTIONS':
+        return jsonify({"status": "ok"}), 200
 
-        elif action in KEY_EVENTS:
-            run_adb(ip, KEY_EVENTS[action], fast=True)
-            return jsonify({"status": "success", "message": f"{station_id} Key: {action}"}), 200
+    # Booking Creation (Called by Customer Website)
+    if request.method == 'POST':
+        data = request.json or {}
+        booking_id = f"BK-{int(time.time())}"
+        
+        new_booking = {
+            "id": booking_id,
+            "customer_name": data.get("name", "Guest"),
+            "phone": data.get("phone", ""),
+            "station_id": data.get("station_id", ""),
+            "slot_time": data.get("slot_time", ""),
+            "date": data.get("date", ""),
+            "status": "PENDING",  # PENDING, APPROVED, REJECTED
+            "timestamp": time.time()
+        }
+        
+        bookings = load_bookings()
+        bookings.append(new_booking)
+        save_bookings(bookings)
+        
+        logging.info(f"[ONLINE BOOKING RECEIVED] {new_booking['customer_name']} for {new_booking['station_id']}")
+        return jsonify({"status": "success", "booking": new_booking}), 201
 
-    return jsonify({"status": "success", "message": f"{station_id} Processed"}), 200
+    # Get All Bookings (Called by Dashboard)
+    bookings = load_bookings()
+    return jsonify({"status": "success", "bookings": bookings}), 200
+
+# 4. ADMIN BOOKING ACTION API (Approve/Reject)
+@app.route('/api/bookings/action', methods=['POST', 'OPTIONS'])
+def action_booking():
+    if request.method == 'OPTIONS':
+        return jsonify({"status": "ok"}), 200
+
+    data = request.json or {}
+    booking_id = data.get("id")
+    action = data.get("action")  # "APPROVE" or "REJECT"
+
+    bookings = load_bookings()
+    updated = False
+    for b in bookings:
+        if b["id"] == booking_id:
+            b["status"] = "APPROVED" if action == "APPROVE" else "REJECTED"
+            updated = True
+            break
+            
+    if updated:
+        save_bookings(bookings)
+        return jsonify({"status": "success", "id": booking_id, "action": action}), 200
+    
+    return jsonify({"status": "error", "message": "Booking not found"}), 404
+
 
 if __name__ == '__main__':
-    local_ip = get_local_ip()
-    print("==================================================")
-    print("    STRANGERS GAMING CAFE - LOCAL BACKEND BRIDGE   ")
-    print("==================================================")
-    print(f" * Server Local IP: http://{local_ip}:5000")
-    print(f" * ADB Binary Path: {ADB_BIN}")
-    print("==================================================")
+    logging.info("Starting Stranger's Gaming Cafe Bridge Server on Port 5000...")
     app.run(host='0.0.0.0', port=5000, debug=False)

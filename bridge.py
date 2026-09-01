@@ -1,4 +1,4 @@
-import os
+os import
 import time
 import json
 import logging
@@ -127,7 +127,6 @@ def control_station():
         elif action == "HDMI2":
             run_adb_command(ip, "shell input keyevent 244") # KEYCODE_TV_INPUT_HDMI_2
         elif action == "LOCK":
-            # Display Lockscreen asset/app or turn screen off
             run_adb_command(ip, "shell am start -a android.intent.action.MAIN -c android.intent.category.HOME")
         elif action == "UP":
             run_adb_command(ip, "shell input keyevent 19")
@@ -161,14 +160,26 @@ def handle_bookings():
     # Booking Creation (Called by Customer Website)
     if request.method == 'POST':
         data = request.json or {}
-        booking_id = f"BK-{int(time.time())}"
+
+        # Fix ID Mismatch: Prioritize Frontend Booking ID (e.g. STR-4010)
+        booking_id = data.get("id") or f"BK-{int(time.time())}"
         
+        # Support both naming formats (customer site vs admin dashboard)
+        customer_name = data.get("customer_name") or data.get("name") or "Guest"
+        station_id = data.get("station_id") or data.get("category") or "General"
+        slot_time = data.get("slot_time") or data.get("slot") or "Immediate"
+
         new_booking = {
             "id": booking_id,
-            "customer_name": data.get("name", "Guest"),
+            "customer_name": customer_name,
             "phone": data.get("phone", ""),
-            "station_id": data.get("station_id", ""),
-            "slot_time": data.get("slot_time", ""),
+            "station_id": station_id,
+            "screen": data.get("screen"),
+            "duration": data.get("duration", "1 Hour"),
+            "team": data.get("team", "1 Player"),
+            "slot_time": slot_time,
+            "price": data.get("price", 0),
+            "utr": data.get("utr", "N/A"),
             "date": data.get("date", ""),
             "status": "PENDING",  # PENDING, APPROVED, REJECTED
             "timestamp": time.time()
@@ -178,7 +189,7 @@ def handle_bookings():
         bookings.append(new_booking)
         save_bookings(bookings)
         
-        logging.info(f"[ONLINE BOOKING RECEIVED] {new_booking['customer_name']} for {new_booking['station_id']}")
+        logging.info(f"[ONLINE BOOKING RECEIVED] ID: {booking_id} | Name: {customer_name} | Slot: {slot_time}")
         return jsonify({"status": "success", "booking": new_booking}), 201
 
     # Get All Bookings (Called by Dashboard)

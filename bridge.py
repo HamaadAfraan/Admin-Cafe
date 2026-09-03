@@ -34,19 +34,18 @@ LAST_REQUEST_TIMES = {}
 
 PC_STATES = {
     "PC-1": "LOCKED",
-    "PC-2": "LOCKED",
-    "PC-3": "LOCKED",
-    "PC-4": "LOCKED"
+    "PC-2": "LOCKED"
 }
 ACTIVE_SESSIONS = {}
 
+# --- UPDATED STATION CAPACITIES ---
 STATION_CAPACITIES = {
     "PS5_55": 2,
     "PS5_43": 2,
     "PS5": 2,
     "PS4": 1,
     "RC WHEEL": 1,
-    "PC": 4
+    "PC": 2
 }
 
 def get_local_ip():

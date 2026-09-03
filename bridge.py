@@ -31,7 +31,6 @@ LOCK_IMAGE_PATH = os.path.join(BASE_DIR, "assets", "lock.jpg")
 BOOKINGS_FILE = os.path.join(BASE_DIR, "bookings.json")
 
 LAST_REQUEST_TIMES = {}
-PENDING_COMMANDS_QUEUE = []
 
 PC_STATES = {
     "PC-1": "LOCKED",
@@ -39,7 +38,7 @@ PC_STATES = {
 }
 ACTIVE_SESSIONS = {}
 
-# --- STATION CAPACITIES ---
+# --- UPDATED STATION CAPACITIES ---
 STATION_CAPACITIES = {
     "PS5_55": 2,
     "PS5_43": 2,
@@ -137,22 +136,12 @@ KEY_EVENTS = {
 }
 
 def load_bookings():
-    if CLOUD_URL:
-        try:
-            resp = requests.get(f"{CLOUD_URL}/api/bookings", timeout=15)
-            if resp.status_code == 200:
-                cloud_bookings = resp.json()
-                if isinstance(cloud_bookings, list):
-                    return cloud_bookings
-        except Exception as e:
-            logging.error(f"[CLOUD FETCH FAILED] Falling back to local file: {e}")
-
     if os.path.exists(BOOKINGS_FILE):
         try:
             with open(BOOKINGS_FILE, "r") as f:
                 return json.load(f)
         except Exception as e:
-            logging.error(f"Error reading local bookings file: {e}")
+            logging.error(f"Error reading bookings file: {e}")
             return []
     return []
 
@@ -171,15 +160,16 @@ def add_cors_and_ngrok_headers(response):
     response.headers['ngrok-skip-browser-warning'] = 'true'
     return response
 
-# --- ADDED ROUTE TO FIX 404 ERRORS ---
-@app.route('/api/pending-commands', methods=['GET', 'OPTIONS'])
-def get_pending_commands():
-    if request.method == 'OPTIONS':
-        return jsonify({"status": "ok"}), 200
-    global PENDING_COMMANDS_QUEUE
-    commands_to_send = list(PENDING_COMMANDS_QUEUE)
-    PENDING_COMMANDS_QUEUE.clear()
-    return jsonify({"status": "success", "commands": commands_to_send}), 200
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve_frontend(path):
+    target_file = os.path.join(DIST_DIR, path)
+    if path != "" and os.path.exists(target_file):
+        return send_from_directory(DIST_DIR, path)
+    index_path = os.path.join(DIST_DIR, 'index.html')
+    if os.path.exists(index_path):
+        return send_from_directory(DIST_DIR, 'index.html')
+    return "Frontend Build Not Found!", 404
 
 @app.route('/lock.jpg', methods=['GET'])
 def get_lock_image():
@@ -261,6 +251,7 @@ def handle_control():
     res = process_control_logic(ip, action, station_id, minutes)
     return jsonify(res), 200
 
+# --- ONLINE BOOKINGS API ---
 @app.route('/api/bookings', methods=['GET', 'POST', 'OPTIONS'])
 def handle_bookings():
     if request.method == 'OPTIONS':
@@ -269,12 +260,6 @@ def handle_bookings():
     if request.method == 'POST':
         data = request.json or {}
         logging.info(f"[INCOMING BOOKING DATA]: {data}")
-
-        if CLOUD_URL:
-            try:
-                requests.post(f"{CLOUD_URL}/api/bookings", json=data, timeout=15)
-            except Exception as e:
-                logging.error(f"[CLOUD SYNC FAILED ON POST]: {e}")
 
         utr = str(
             data.get("utr") or 
@@ -359,17 +344,14 @@ def delete_booking(booking_id):
     if request.method == 'OPTIONS':
         return jsonify({"status": "ok"}), 200
 
-    if CLOUD_URL:
-        try:
-            requests.delete(f"{CLOUD_URL}/api/bookings/{booking_id}", timeout=15)
-        except Exception as e:
-            logging.error(f"[CLOUD DELETE FAILED]: {e}")
-
     bookings = load_bookings()
     filtered_bookings = [b for b in bookings if str(b.get("id")) != str(booking_id)]
 
-    save_bookings(filtered_bookings)
-    return jsonify({"status": "success", "message": f"Booking {booking_id} deleted"}), 200
+    if len(filtered_bookings) < len(bookings):
+        save_bookings(filtered_bookings)
+        return jsonify({"status": "success", "message": f"Booking {booking_id} deleted"}), 200
+
+    return jsonify({"status": "error", "message": "Booking ID not found"}), 404
 
 @app.route('/api/bookings/action', methods=['POST', 'OPTIONS'])
 def action_booking():
@@ -379,12 +361,6 @@ def action_booking():
     data = request.json or {}
     booking_id = data.get("id")
     action = data.get("action")
-
-    if CLOUD_URL:
-        try:
-            requests.post(f"{CLOUD_URL}/api/bookings/action", json=data, timeout=15)
-        except Exception as e:
-            logging.error(f"[CLOUD ACTION FAILED]: {e}")
 
     bookings = load_bookings()
     updated = False
@@ -400,25 +376,16 @@ def action_booking():
 
     return jsonify({"status": "error", "message": "Booking not found"}), 404
 
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
-def serve_frontend(path):
-    target_file = os.path.join(DIST_DIR, path)
-    if path != "" and os.path.exists(target_file):
-        return send_from_directory(DIST_DIR, path)
-    index_path = os.path.join(DIST_DIR, 'index.html')
-    if os.path.exists(index_path):
-        return send_from_directory(DIST_DIR, 'index.html')
-    return "Frontend Build Not Found!", 404
-
+# --- BACKGROUND CLOUD SYNC AGENT ---
 def cloud_polling_agent():
+    """Jab backend Cloud (Render) par active hoga, tab local bridge yahan se commands pull karega"""
     if not CLOUD_URL:
         return
 
     logging.info(f"[CLOUD SYNC ACTIVE] Polling cloud commands from: {CLOUD_URL}")
     while True:
         try:
-            resp = requests.get(f"{CLOUD_URL}/api/pending-commands", timeout=15)
+            resp = requests.get(f"{CLOUD_URL}/api/pending-commands", timeout=5)
             if resp.status_code == 200:
                 commands = resp.json().get("commands", [])
                 for cmd in commands:
@@ -429,7 +396,7 @@ def cloud_polling_agent():
                     process_control_logic(ip, action, station_id, minutes)
         except Exception:
             pass
-        time.sleep(5)
+        time.sleep(3)
 
 if __name__ == '__main__':
     local_ip = get_local_ip()

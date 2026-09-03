@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { 
   Activity, 
@@ -104,6 +104,33 @@ function Dashboard() {
   // Online Bookings Modal State
   const [showBookings, setShowBookings] = useState(false);
 
+  // UNLOCK AUDIO ON FIRST USER INTERACTION
+  useEffect(() => {
+    const handleFirstClick = () => {
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          if (ctx.state === "suspended") {
+            ctx.resume();
+          }
+        }
+      } catch (e) {
+        /* ignore */
+      }
+      window.removeEventListener("click", handleFirstClick);
+      window.removeEventListener("keydown", handleFirstClick);
+    };
+
+    window.addEventListener("click", handleFirstClick);
+    window.addEventListener("keydown", handleFirstClick);
+
+    return () => {
+      window.removeEventListener("click", handleFirstClick);
+      window.removeEventListener("keydown", handleFirstClick);
+    };
+  }, []);
+
   const stations = CAFE_STATIONS;
 
   const visible = useMemo(
@@ -119,7 +146,7 @@ function Dashboard() {
     return list.filter((b) => String(b?.status || "").trim().toUpperCase() === "PENDING");
   }, [mgr.bookings]);
 
-  const pendingBookingsCount = pendingBookings.length;
+  const pendingBookingsCount = pendingBookings.length || mgr.pendingCount || 0;
 
   const stats = [
     { label: "Total Stations", value: String(stations.length), icon: MonitorSmartphone },
@@ -175,7 +202,7 @@ function Dashboard() {
       : `http://${mgr.bridgeUrl}`;
 
     try {
-      const response = await fetch(`${baseUrl}/api/control`, {
+      const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/control`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

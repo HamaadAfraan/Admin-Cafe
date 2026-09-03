@@ -136,12 +136,24 @@ KEY_EVENTS = {
 }
 
 def load_bookings():
+    # Primary: Fetch directly from Cloud (Render)
+    if CLOUD_URL:
+        try:
+            resp = requests.get(f"{CLOUD_URL}/api/bookings", timeout=3)
+            if resp.status_code == 200:
+                cloud_bookings = resp.json()
+                if isinstance(cloud_bookings, list):
+                    return cloud_bookings
+        except Exception as e:
+            logging.error(f"[CLOUD FETCH FAILED] Falling back to local file: {e}")
+
+    # Fallback: Read local JSON
     if os.path.exists(BOOKINGS_FILE):
         try:
             with open(BOOKINGS_FILE, "r") as f:
                 return json.load(f)
         except Exception as e:
-            logging.error(f"Error reading bookings file: {e}")
+            logging.error(f"Error reading local bookings file: {e}")
             return []
     return []
 
@@ -261,6 +273,13 @@ def handle_bookings():
         data = request.json or {}
         logging.info(f"[INCOMING BOOKING DATA]: {data}")
 
+        # Sync POST request to Render Cloud
+        if CLOUD_URL:
+            try:
+                requests.post(f"{CLOUD_URL}/api/bookings", json=data, timeout=3)
+            except Exception as e:
+                logging.error(f"[CLOUD SYNC FAILED ON POST]: {e}")
+
         utr = str(
             data.get("utr") or 
             data.get("transactionId") or 
@@ -344,14 +363,17 @@ def delete_booking(booking_id):
     if request.method == 'OPTIONS':
         return jsonify({"status": "ok"}), 200
 
+    if CLOUD_URL:
+        try:
+            requests.delete(f"{CLOUD_URL}/api/bookings/{booking_id}", timeout=3)
+        except Exception as e:
+            logging.error(f"[CLOUD DELETE FAILED]: {e}")
+
     bookings = load_bookings()
     filtered_bookings = [b for b in bookings if str(b.get("id")) != str(booking_id)]
 
-    if len(filtered_bookings) < len(bookings):
-        save_bookings(filtered_bookings)
-        return jsonify({"status": "success", "message": f"Booking {booking_id} deleted"}), 200
-
-    return jsonify({"status": "error", "message": "Booking ID not found"}), 404
+    save_bookings(filtered_bookings)
+    return jsonify({"status": "success", "message": f"Booking {booking_id} deleted"}), 200
 
 @app.route('/api/bookings/action', methods=['POST', 'OPTIONS'])
 def action_booking():
@@ -361,6 +383,12 @@ def action_booking():
     data = request.json or {}
     booking_id = data.get("id")
     action = data.get("action")
+
+    if CLOUD_URL:
+        try:
+            requests.post(f"{CLOUD_URL}/api/bookings/action", json=data, timeout=3)
+        except Exception as e:
+            logging.error(f"[CLOUD ACTION FAILED]: {e}")
 
     bookings = load_bookings()
     updated = False

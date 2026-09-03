@@ -45,8 +45,6 @@ export function useStationManager() {
   const [sessions, setSessions] = useState<Record<string, Session>>({});
   const [bookings, setBookings] = useState<BookingRequest[]>([]);
 
-  // Track previous pending count for audio alert trigger
-  const prevPendingCountRef = useRef<number>(0);
   const processedSessionsRef = useRef<Set<string>>(new Set());
 
   const [history, setHistory] = useState<SessionRecord[]>(() => {
@@ -63,39 +61,10 @@ export function useStationManager() {
   stationsRef.current = stations;
   bridgeRef.current = bridgeUrl;
 
-  // Helper function to format Bridge URL cleanly
   const getCleanBridgeUrl = useCallback(() => {
     let url = bridgeRef.current || "http://localhost:5000";
     if (!url.startsWith("http")) url = `http://${url}`;
-    return url.replace(/\/+$/, ""); // Remove trailing slash
-  }, []);
-
-  // Web Audio API Beep Sound Generator
-  const playNotificationSound = useCallback(() => {
-    try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) return;
-      
-      const ctx = new AudioCtx();
-      if (ctx.state === "suspended") {
-        ctx.resume();
-      }
-
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(880, ctx.currentTime); // Pitch (880Hz)
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      osc.start();
-      osc.stop(ctx.currentTime + 0.4); // 0.4 seconds beep
-    } catch (e) {
-      console.log("Audio alert playback blocked or unsupported:", e);
-    }
+    return url.replace(/\/+$/, "");
   }, []);
 
   useEffect(() => {
@@ -117,7 +86,6 @@ export function useStationManager() {
     }
   }, [history]);
 
-  // CONTROL COMMAND FUNCTION
   const fire = useCallback(
     (stationId: string, action: string, minutes?: number) => {
       const station = stationsRef.current.find((s) => s.id === stationId);
@@ -135,7 +103,6 @@ export function useStationManager() {
     []
   );
 
-  // START SESSION
   const start = useCallback(
     (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
       const totalMs = minutes * 60_000;
@@ -158,7 +125,7 @@ export function useStationManager() {
     [fire]
   );
 
-  // REAL-TIME ONLINE BOOKINGS SYNC & AUDIO ALERT
+  // REAL-TIME BOOKINGS POLLING
   const fetchBookings = useCallback(async () => {
     if (!bridgeRef.current) return;
     try {
@@ -166,8 +133,8 @@ export function useStationManager() {
       const res = await fetch(`${baseUrl}/api/bookings`);
       if (res.ok) {
         const data = await res.json();
-
         let list: BookingRequest[] = [];
+
         if (Array.isArray(data)) {
           list = data;
         } else if (data && Array.isArray(data.bookings)) {
@@ -176,96 +143,76 @@ export function useStationManager() {
 
         const formattedList = list.map((b) => ({
           ...b,
-          status: String(b.status || "PENDING").toUpperCase(),
+          status: String(b.status || "PENDING").trim().toUpperCase(),
         }));
 
         setBookings(formattedList);
-
-        // Calculate current pending count
-        const currentPendingCount = formattedList.filter(
-          (b) => b.status === "PENDING"
-        ).length;
-
-        // Trigger Audio Alert when a NEW booking arrives
-        if (
-          currentPendingCount > prevPendingCountRef.current &&
-          prevPendingCountRef.current !== 0
-        ) {
-          playNotificationSound();
-          toast.info("🎮 New Online Booking Received!");
-        }
-
-        prevPendingCountRef.current = currentPendingCount;
       }
     } catch (err) {
-      // Bridge server unreachable silently handled
+      /* Bridge unreachable silent catch */
     }
-  }, [getCleanBridgeUrl, playNotificationSound]);
+  }, [getCleanBridgeUrl]);
 
-  // Poll online bookings every 3 seconds
   useEffect(() => {
     fetchBookings();
-    const interval = setInterval(fetchBookings, 3000);
+    const interval = setInterval(fetchBookings, 2000);
     return () => clearInterval(interval);
   }, [fetchBookings]);
 
-  // APPROVE BOOKING
-  const approveBooking = useCallback(async (booking: BookingRequest) => {
-    setBookings((prev) =>
-      prev.map((b) => (b.id === booking.id ? { ...b, status: "APPROVED" } : b))
-    );
-
-    try {
-      const baseUrl = getCleanBridgeUrl();
-      const res = await fetch(`${baseUrl}/api/bookings/action`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: booking.id, action: "APPROVE" }),
-      });
-
-      if (res.ok) {
-        toast.success(`Booking approved for ${booking.customer_name}`);
-      }
-    } catch (err) {
-      toast.error("Failed to approve booking via Bridge");
-    } finally {
-      fetchBookings();
-    }
-
-    // Auto-Start station session upon approval
-    if (booking.station_id) {
-      start(
-        booking.station_id,
-        booking.duration_minutes || 60,
-        booking.customer_name || "Online Guest",
-        booking.players_count || 1
+  const approveBooking = useCallback(
+    async (booking: BookingRequest) => {
+      setBookings((prev) =>
+        prev.map((b) => (b.id === booking.id ? { ...b, status: "APPROVED" } : b))
       );
-    }
-  }, [fetchBookings, getCleanBridgeUrl, start]);
 
-  // REJECT BOOKING
-  const rejectBooking = useCallback(async (bookingId: string) => {
-    setBookings((prev) =>
-      prev.map((b) => (b.id === bookingId ? { ...b, status: "REJECTED" } : b))
-    );
-
-    try {
-      const baseUrl = getCleanBridgeUrl();
-      const res = await fetch(`${baseUrl}/api/bookings/action`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: bookingId, action: "REJECT" }),
-      });
-
-      if (res.ok) {
-        toast.info("Booking request rejected");
+      try {
+        const baseUrl = getCleanBridgeUrl();
+        await fetch(`${baseUrl}/api/bookings/action`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: booking.id, action: "APPROVE" }),
+        });
+        toast.success(`Booking approved for ${booking.customer_name}`);
+      } catch (err) {
+        toast.error("Failed to approve booking via Bridge");
+      } finally {
+        fetchBookings();
       }
-    } catch (err) {
-      toast.error("Failed to reject booking via Bridge");
-    } finally {
-      fetchBookings();
-    }
-  }, [fetchBookings, getCleanBridgeUrl]);
+
+      if (booking.station_id) {
+        start(
+          booking.station_id,
+          booking.duration_minutes || 60,
+          booking.customer_name || "Online Guest",
+          booking.players_count || 1
+        );
+      }
+    },
+    [fetchBookings, getCleanBridgeUrl, start]
+  );
+
+  const rejectBooking = useCallback(
+    async (bookingId: string) => {
+      setBookings((prev) =>
+        prev.map((b) => (b.id === bookingId ? { ...b, status: "REJECTED" } : b))
+      );
+
+      try {
+        const baseUrl = getCleanBridgeUrl();
+        await fetch(`${baseUrl}/api/bookings/action`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: bookingId, action: "REJECT" }),
+        });
+        toast.info("Booking request rejected");
+      } catch (err) {
+        toast.error("Failed to reject booking via Bridge");
+      } finally {
+        fetchBookings();
+      }
+    },
+    [fetchBookings, getCleanBridgeUrl]
+  );
 
   const deleteSessionHistory = useCallback((recordId: string) => {
     setHistory((prev) => prev.filter((item) => item.id !== recordId));
@@ -274,11 +221,7 @@ export function useStationManager() {
 
   const logSessionHistory = useCallback((session: Session) => {
     const sessionKey = `${session.stationId}-${session.startedAt}`;
-
-    if (processedSessionsRef.current.has(sessionKey)) {
-      return;
-    }
-
+    if (processedSessionsRef.current.has(sessionKey)) return;
     processedSessionsRef.current.add(sessionKey);
 
     const station = stationsRef.current.find((s) => s.id === session.stationId);
@@ -426,8 +369,9 @@ export function useStationManager() {
     }
   }, []);
 
-  // Pending count variable for Badge UI
-  const pendingCount = bookings.filter((b) => b.status === "PENDING").length;
+  const pendingCount = bookings.filter(
+    (b) => String(b.status || "").trim().toUpperCase() === "PENDING"
+  ).length;
 
   return {
     stations,

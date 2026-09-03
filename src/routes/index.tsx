@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { 
   Activity, 
@@ -39,7 +39,6 @@ export const Route = createFileRoute("/")({
   component: Dashboard,
 });
 
-// Dynamic Date Formatter: Today / Yesterday / Actual Date
 function formatDisplayDate(record: SessionRecord): string {
   const recordTimestamp = record.timestamp;
   if (!recordTimestamp) return record.date || "Today";
@@ -62,22 +61,14 @@ function formatDisplayDate(record: SessionRecord): string {
   });
 }
 
-// DIRECT STATIONS (11 Stations: 2 SIM, 4 PS5, 1 PS4, 4 PC)
 const CAFE_STATIONS: Station[] = [
-  // 1. SIM Simulators (2)
   { id: "SIM-01", kind: "sim", ip: "192.168.1.150" },
   { id: "SIM-02", kind: "sim", ip: "192.168.1.151" },
-
-  // 2. PS5 Consoles (4)
   { id: "PS5-01", kind: "ps5", ip: "192.168.1.153" },
   { id: "PS5-02", kind: "ps5", ip: "192.168.1.154" },
   { id: "PS5-03", kind: "ps5", ip: "192.168.1.155" },
   { id: "PS5-04", kind: "ps5", ip: "192.168.1.156" },
-
-  // 3. PS4 Console (1)
   { id: "PS4-01", kind: "ps4", ip: "192.168.1.157" },
-
-  // 4. Gaming PCs (01 to 04)
   { id: "PC-01", kind: "pc", ip: "192.168.1.50", hostname: "stranger-pc-1" },
   { id: "PC-02", kind: "pc", ip: "192.168.1.51", hostname: "stranger-pc-2" },
   { id: "PC-03", kind: "pc", ip: "192.168.1.52", hostname: "stranger-pc-3" },
@@ -96,40 +87,11 @@ function Dashboard() {
   const mgr = useStationManager();
   const [filter, setFilter] = useState<"all" | StationKind>("all");
 
-  // Customer Records Modal State
   const [showRecords, setShowRecords] = useState(false);
   const [recordSearch, setRecordSearch] = useState("");
   const [recordCategory, setRecordCategory] = useState("all");
 
-  // Online Bookings Modal State
   const [showBookings, setShowBookings] = useState(false);
-
-  // UNLOCK AUDIO ON FIRST USER INTERACTION
-  useEffect(() => {
-    const handleFirstClick = () => {
-      try {
-        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-        if (AudioCtx) {
-          const ctx = new AudioCtx();
-          if (ctx.state === "suspended") {
-            ctx.resume();
-          }
-        }
-      } catch (e) {
-        /* ignore */
-      }
-      window.removeEventListener("click", handleFirstClick);
-      window.removeEventListener("keydown", handleFirstClick);
-    };
-
-    window.addEventListener("click", handleFirstClick);
-    window.addEventListener("keydown", handleFirstClick);
-
-    return () => {
-      window.removeEventListener("click", handleFirstClick);
-      window.removeEventListener("keydown", handleFirstClick);
-    };
-  }, []);
 
   const stations = CAFE_STATIONS;
 
@@ -140,13 +102,14 @@ function Dashboard() {
 
   const active = Object.keys(mgr.sessions || {}).length;
 
-  // SAFE & ROBUST PENDING BOOKINGS CALCULATION
-  const pendingBookings = useMemo(() => {
+  // DYNAMIC BADGE COUNT FOR PENDING BOOKINGS
+  const pendingBookingsCount = useMemo(() => {
+    if (typeof mgr.pendingCount === "number" && mgr.pendingCount > 0) {
+      return mgr.pendingCount;
+    }
     const list = Array.isArray(mgr.bookings) ? mgr.bookings : [];
-    return list.filter((b) => String(b?.status || "").trim().toUpperCase() === "PENDING");
-  }, [mgr.bookings]);
-
-  const pendingBookingsCount = pendingBookings.length || mgr.pendingCount || 0;
+    return list.filter((b) => String(b?.status || "").trim().toUpperCase() === "PENDING").length;
+  }, [mgr.bookings, mgr.pendingCount]);
 
   const stats = [
     { label: "Total Stations", value: String(stations.length), icon: MonitorSmartphone },
@@ -192,17 +155,14 @@ function Dashboard() {
   const totalFilteredEarnings = filteredRecords.reduce((acc, curr) => acc + (curr.amount || 0), 0);
 
   const handleControl = async (stationId: string, action: string, ip: string) => {
-    if (!mgr.bridgeUrl) {
-      console.warn("Bridge URL not configured in Settings.");
-      return;
-    }
+    if (!mgr.bridgeUrl) return;
 
     const baseUrl = mgr.bridgeUrl.startsWith("http")
       ? mgr.bridgeUrl
       : `http://${mgr.bridgeUrl}`;
 
     try {
-      const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/control`, {
+      await fetch(`${baseUrl.replace(/\/+$/, "")}/api/control`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -211,10 +171,6 @@ function Dashboard() {
           ip: ip,
         }),
       });
-
-      if (!response.ok) {
-        throw new Error(`Bridge returned HTTP ${response.status}`);
-      }
     } catch (err) {
       console.error("Bridge Connection Error:", err);
     }
@@ -241,20 +197,20 @@ function Dashboard() {
 
             {/* TOP HEADER BUTTONS */}
             <div className="flex items-center gap-2">
-              {/* FIXED BOOKINGS BUTTON WITH DYNAMIC FLOATING RED BADGE */}
+              {/* BOOKINGS BUTTON WITH DYNAMIC RED BADGE */}
               <Button
                 variant="outline"
                 size="sm"
                 className={cn(
                   "relative border-purple-500/60 bg-purple-950/40 text-purple-300 hover:bg-purple-600 hover:text-white font-bold h-9 text-xs transition-all shadow-md px-3 overflow-visible",
-                  pendingBookingsCount > 0 && "border-purple-400 bg-purple-900/60 text-white ring-1 ring-purple-500/50"
+                  pendingBookingsCount > 0 && "border-purple-400 bg-purple-900/60 text-white ring-2 ring-purple-500/50"
                 )}
                 onClick={() => setShowBookings(true)}
               >
                 <CalendarClock className="size-4 mr-1.5 text-purple-400" />
                 Bookings
                 {pendingBookingsCount > 0 && (
-                  <span className="absolute -top-2 -right-2 flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-extrabold text-white animate-bounce shadow-lg ring-2 ring-background border border-red-400">
+                  <span className="absolute -top-2.5 -right-2.5 flex h-6 w-6 items-center justify-center rounded-full bg-red-600 text-[11px] font-black text-white animate-bounce shadow-xl ring-2 ring-background border border-red-300">
                     {pendingBookingsCount}
                   </span>
                 )}

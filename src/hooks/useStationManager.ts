@@ -43,6 +43,8 @@ export function useStationManager() {
   const [sessions, setSessions] = useState<Record<string, Session>>({});
   const [bookings, setBookings] = useState<BookingRequest[]>([]);
   
+  // Track previous pending count for audio alert trigger
+  const prevPendingCountRef = useRef<number>(0);
   const processedSessionsRef = useRef<Set<string>>(new Set());
 
   const [history, setHistory] = useState<SessionRecord[]>(() => {
@@ -58,6 +60,27 @@ export function useStationManager() {
   const bridgeRef = useRef(bridgeUrl);
   stationsRef.current = stations;
   bridgeRef.current = bridgeUrl;
+
+  // Web Audio API Beep Sound Generator
+  const playNotificationSound = useCallback(() => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, ctx.currentTime); // Pitch (880Hz)
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start();
+      osc.stop(ctx.currentTime + 0.4); // 0.4 seconds beep
+    } catch (e) {
+      console.log("Audio alert playback blocked or unsupported:", e);
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -78,7 +101,7 @@ export function useStationManager() {
     }
   }, [history]);
 
-  // --- REAL-TIME ONLINE BOOKINGS SYNC ---
+  // --- REAL-TIME ONLINE BOOKINGS SYNC & AUDIO ALERT ---
   const fetchBookings = useCallback(async () => {
     if (!bridgeRef.current) return;
     try {
@@ -90,7 +113,6 @@ export function useStationManager() {
       if (res.ok) {
         const data = await res.json();
         
-        // Flexible data parsing (handles direct array or nested { status, bookings })
         let list: BookingRequest[] = [];
         if (Array.isArray(data)) {
           list = data;
@@ -98,20 +120,35 @@ export function useStationManager() {
           list = data.bookings;
         }
 
-        // Standardize status format to uppercase
         const formattedList = list.map((b) => ({
           ...b,
           status: String(b.status || "PENDING").toUpperCase(),
         }));
 
         setBookings(formattedList);
+
+        // Calculate current pending count
+        const currentPendingCount = formattedList.filter(
+          (b) => b.status === "PENDING"
+        ).length;
+
+        // Trigger Audio Alert when a NEW booking arrives
+        if (
+          currentPendingCount > prevPendingCountRef.current &&
+          prevPendingCountRef.current !== 0
+        ) {
+          playNotificationSound();
+          toast.info("🎮 New Online Booking Received!");
+        }
+
+        prevPendingCountRef.current = currentPendingCount;
       }
     } catch (err) {
       // Bridge server unreachable
     }
-  }, []);
+  }, [playNotificationSound]);
 
-  // Poll online bookings every 3 seconds for instant badge update
+  // Poll online bookings every 3 seconds
   useEffect(() => {
     fetchBookings();
     const interval = setInterval(fetchBookings, 3000);
@@ -119,7 +156,6 @@ export function useStationManager() {
   }, [fetchBookings]);
 
   const approveBooking = useCallback(async (booking: BookingRequest) => {
-    // Instant UI update
     setBookings((prev) =>
       prev.map((b) => (b.id === booking.id ? { ...b, status: "APPROVED" } : b))
     );
@@ -146,7 +182,6 @@ export function useStationManager() {
   }, [fetchBookings]);
 
   const rejectBooking = useCallback(async (bookingId: string) => {
-    // Instant UI update
     setBookings((prev) =>
       prev.map((b) => (b.id === bookingId ? { ...b, status: "REJECTED" } : b))
     );
@@ -260,7 +295,6 @@ export function useStationManager() {
     [fire, logSessionHistory]
   );
 
-  // Single Execution Timer Loop
   useEffect(() => {
     const timer = setInterval(() => {
       setSessions((prev) => {
@@ -365,12 +399,16 @@ export function useStationManager() {
     }
   }, []);
 
+  // Pending count variable for Badge UI
+  const pendingCount = bookings.filter((b) => b.status === "PENDING").length;
+
   return {
     stations,
     bridgeUrl,
     sessions,
     history,
     bookings,
+    pendingCount, // Badge count for header/button
     fetchBookings,
     approveBooking,
     rejectBooking,

@@ -33,7 +33,9 @@ import { cn } from "@/lib/utils";
 import type { BookingRequest } from "@/hooks/useStationManager";
 
 const ICONS = { ps5: Gamepad2, ps4: Gamepad2, pc: Monitor, sim: Car } as const;
-const PRESETS = [30, 60, 120];
+
+// UPDATED: Presets set to 10m, 30m, and 60m (1h)
+const PRESETS = [10, 30, 60];
 
 function formatPlayedTime(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -106,7 +108,7 @@ export function StationCard({
 }: Props) {
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
-  const [minutes, setMinutes] = useState(60);
+  const [minutes, setMinutes] = useState(10);
   const [custom, setCustom] = useState(false);
   const [playerCount, setPlayerCount] = useState<number>(2);
 
@@ -385,6 +387,7 @@ export function StationCard({
               </div>
             )}
 
+            {/* PRESETS: 10m, 30m, 1h + Custom */}
             <div className="grid grid-cols-4 gap-1.5">
               {PRESETS.map((m) => (
                 <Button

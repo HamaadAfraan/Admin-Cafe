@@ -14,7 +14,7 @@ import {
 import { StationCard } from "@/components/StationCard";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { BookingsModal } from "@/components/BookingsModal";
-import { useStationManager, type SessionRecord, type BookingRequest } from "@/hooks/useStationManager";
+import { useStationManager, type SessionRecord } from "@/hooks/useStationManager";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -47,7 +47,6 @@ function formatDisplayDate(record: SessionRecord): string {
   const recordDate = new Date(recordTimestamp);
   const now = new Date();
 
-  // Reset hours to compare only calendar days
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const target = new Date(recordDate.getFullYear(), recordDate.getMonth(), recordDate.getDate());
 
@@ -112,8 +111,15 @@ function Dashboard() {
     [stations, filter]
   );
 
-  const active = Object.keys(mgr.sessions).length;
-  const pendingBookingsCount = (mgr.bookings || []).filter((b) => b.status === "PENDING").length;
+  const active = Object.keys(mgr.sessions || {}).length;
+
+  // SAFE PENDING BOOKINGS CALCULATION (Case Insensitive Matching)
+  const pendingBookings = useMemo(() => {
+    const list = mgr.bookings || [];
+    return list.filter((b) => (b.status || "").toUpperCase() === "PENDING");
+  }, [mgr.bookings]);
+
+  const pendingBookingsCount = pendingBookings.length;
 
   const stats = [
     { label: "Total Stations", value: String(stations.length), icon: MonitorSmartphone },
@@ -126,8 +132,7 @@ function Dashboard() {
     },
   ] as const;
 
-  // ACCURATE CATEGORY-WISE FILTERING FOR RECORDS MODAL
-  const historyLogs: SessionRecord[] = mgr.history || [];
+  const historyLogs: SessionRecord[] = mgr.history || mgr.sessionHistory || [];
 
   const filteredRecords = historyLogs.filter((log) => {
     const searchLower = recordSearch.toLowerCase();
@@ -148,14 +153,8 @@ function Dashboard() {
     const logKind = log.kind || (stId.startsWith("PS5") ? "ps5" : stId.startsWith("PS4") ? "ps4" : stId.startsWith("PC") ? "pc" : "sim");
 
     if (cat === "all") return true;
-
-    // VIP PS5s (PS5-01 & PS5-02)
     if (cat === "vip") return stId === "PS5-01" || stId === "PS5-02";
-
-    // Standard PS5s (PS5-03, PS5-04)
     if (cat === "ps5") return logKind === "ps5" && stId !== "PS5-01" && stId !== "PS5-02";
-
-    // PS4, PC, Simulators
     if (cat === "ps4") return logKind === "ps4";
     if (cat === "pc") return logKind === "pc";
     if (cat === "sim") return logKind === "sim";
@@ -189,8 +188,6 @@ function Dashboard() {
       if (!response.ok) {
         throw new Error(`Bridge returned HTTP ${response.status}`);
       }
-
-      console.log(`[REMOTE] Sent ${action} to ${stationId} (${ip})`);
     } catch (err) {
       console.error("Bridge Connection Error:", err);
     }
@@ -209,7 +206,6 @@ function Dashboard() {
                 <h1 className="font-display text-xl font-black tracking-[0.2em] text-foreground">
                   STRANGER'S GAMING CAFE
                 </h1>
-
                 <p className="text-[11px] uppercase tracking-[0.25em] text-muted-foreground">
                   ADMIN MANAGEMENT PANEL
                 </p>
@@ -218,23 +214,26 @@ function Dashboard() {
 
             {/* TOP HEADER BUTTONS */}
             <div className="flex items-center gap-2">
-              {/* 1. ONLINE BOOKINGS BUTTON WITH BADGE */}
+              {/* FIXED BOOKINGS BUTTON WITH DYNAMIC RED BADGE & PULSE */}
               <Button
                 variant="outline"
                 size="sm"
-                className="relative border-purple-500/60 bg-purple-950/40 text-purple-300 hover:bg-purple-600 hover:text-white font-bold h-9 text-xs transition-all shadow-md"
+                className={cn(
+                  "relative border-purple-500/60 bg-purple-950/40 text-purple-300 hover:bg-purple-600 hover:text-white font-bold h-9 text-xs transition-all shadow-md px-3",
+                  pendingBookingsCount > 0 && "border-purple-400 bg-purple-900/60 text-white ring-1 ring-purple-500/50"
+                )}
                 onClick={() => setShowBookings(true)}
               >
                 <CalendarClock className="size-4 mr-1.5 text-purple-400" />
                 Bookings
                 {pendingBookingsCount > 0 && (
-                  <span className="ml-1.5 rounded-full bg-purple-500 px-1.5 py-0.2 text-[10px] font-black text-white animate-pulse">
+                  <span className="ml-2 inline-flex items-center justify-center rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-extrabold text-white animate-pulse shadow-glow-danger">
                     {pendingBookingsCount}
                   </span>
                 )}
               </Button>
 
-              {/* 2. RECORDS BUTTON */}
+              {/* RECORDS BUTTON */}
               <Button
                 variant="outline"
                 size="sm"
@@ -244,7 +243,7 @@ function Dashboard() {
                 <FileText className="size-4 mr-1.5" /> Records
               </Button>
 
-              {/* 3. EXISTING NETWORK SETTINGS DIALOG */}
+              {/* SETTINGS DIALOG */}
               <SettingsDialog
                 stations={stations}
                 bridgeUrl={mgr.bridgeUrl}
@@ -271,7 +270,6 @@ function Dashboard() {
                         : "text-primary"
                   )}
                 />
-
                 <div>
                   <p className="font-display text-xl font-bold tabular-nums">{s.value}</p>
                   <p className="text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -304,9 +302,8 @@ function Dashboard() {
       <section className="mx-auto max-w-[1500px] px-5 py-6">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {visible.map((station) => {
-            // Find if there is a pending booking for this specific station
             const pendingForStation = (mgr.bookings || []).find(
-              (b) => b.station_id === station.id && b.status === "PENDING"
+              (b) => b.station_id === station.id && (b.status || "").toUpperCase() === "PENDING"
             );
 
             return (
@@ -335,7 +332,7 @@ function Dashboard() {
         </div>
       </section>
 
-      {/* --- MASTER ONLINE BOOKINGS MODAL --- */}
+      {/* ONLINE BOOKINGS MODAL */}
       <BookingsModal
         open={showBookings}
         onOpenChange={setShowBookings}
@@ -344,12 +341,10 @@ function Dashboard() {
         onReject={(bId) => mgr.rejectBooking(bId)}
       />
 
-      {/* --- MASTER CUSTOMER RECORDS MODAL --- */}
+      {/* CUSTOMER RECORDS MODAL */}
       {showRecords && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
           <div className="relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-xl border border-red-900/60 bg-card p-5 shadow-2xl">
-            
-            {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-border/80 pb-3">
               <div className="flex items-center gap-2.5">
                 <div className="grid size-9 place-items-center rounded-lg border border-red-500/40 bg-red-500/10 text-red-500">
@@ -375,7 +370,6 @@ function Dashboard() {
               </div>
             </div>
 
-            {/* Search & Category Tabs */}
             <div className="my-3 space-y-2.5">
               <div className="relative">
                 <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
@@ -413,7 +407,6 @@ function Dashboard() {
               </div>
             </div>
 
-            {/* Session Records List */}
             <div className="flex-1 overflow-y-auto pr-1 space-y-2 max-h-[45vh]">
               {filteredRecords.length === 0 ? (
                 <div className="py-12 text-center text-xs text-muted-foreground">
@@ -442,24 +435,21 @@ function Dashboard() {
                       </div>
 
                       <div className="flex items-center justify-between sm:justify-end gap-2.5 text-right">
-                        {/* Dynamic Date Badge */}
                         <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground bg-secondary/40 px-2 py-0.5 rounded border border-border/50">
                           <Calendar className="size-3 text-red-400" />
                           <span>{displayDate}</span>
                         </div>
 
-                        {/* Revenue Badge */}
                         <span className="text-xs font-black text-emerald-400 bg-emerald-950/30 border border-emerald-800/40 px-2.5 py-1 rounded-md">
                           ₹{log.amount}
                         </span>
 
-                        {/* DELETE RECORD CROSS (X) BUTTON */}
                         <Button
                           size="icon"
                           variant="ghost"
                           className="h-7 w-7 text-muted-foreground hover:bg-red-950/50 hover:text-red-400 border border-transparent hover:border-red-500/40 transition-all ml-1"
                           title="Delete Record"
-                          onClick={() => mgr.deleteSessionHistory(log.id)}
+                          onClick={() => mgr.deleteSessionHistory?.(log.id)}
                         >
                           <X className="size-4" />
                         </Button>

@@ -33,7 +33,7 @@ export interface BookingRequest {
   station_id: string;
   slot_time: string;
   date: string;
-  status: "PENDING" | "APPROVED" | "REJECTED";
+  status: "PENDING" | "APPROVED" | "REJECTED" | string;
   timestamp: number;
 }
 
@@ -78,57 +78,97 @@ export function useStationManager() {
     }
   }, [history]);
 
-  // --- ONLINE BOOKINGS SYNC FROM BRIDGE ---
+  // --- REAL-TIME ONLINE BOOKINGS SYNC ---
   const fetchBookings = useCallback(async () => {
+    if (!bridgeRef.current) return;
     try {
-      const res = await fetch(`${bridgeRef.current}/api/bookings`);
+      const baseUrl = bridgeRef.current.startsWith("http")
+        ? bridgeRef.current
+        : `http://${bridgeRef.current}`;
+
+      const res = await fetch(`${baseUrl}/api/bookings`);
       if (res.ok) {
         const data = await res.json();
-        if (data.status === "success" && Array.isArray(data.bookings)) {
-          setBookings(data.bookings);
+        
+        // Flexible data parsing (handles direct array or nested { status, bookings })
+        let list: BookingRequest[] = [];
+        if (Array.isArray(data)) {
+          list = data;
+        } else if (data && Array.isArray(data.bookings)) {
+          list = data.bookings;
         }
+
+        // Standardize status format to uppercase
+        const formattedList = list.map((b) => ({
+          ...b,
+          status: String(b.status || "PENDING").toUpperCase(),
+        }));
+
+        setBookings(formattedList);
       }
     } catch (err) {
-      // Bridge unavailable or offline
+      // Bridge server unreachable
     }
   }, []);
 
-  // Auto-poll online bookings every 10 seconds
+  // Poll online bookings every 3 seconds for instant badge update
   useEffect(() => {
     fetchBookings();
-    const interval = setInterval(fetchBookings, 10000);
+    const interval = setInterval(fetchBookings, 3000);
     return () => clearInterval(interval);
   }, [fetchBookings]);
 
   const approveBooking = useCallback(async (booking: BookingRequest) => {
+    // Instant UI update
+    setBookings((prev) =>
+      prev.map((b) => (b.id === booking.id ? { ...b, status: "APPROVED" } : b))
+    );
+
     try {
-      const res = await fetch(`${bridgeRef.current}/api/bookings/action`, {
+      const baseUrl = bridgeRef.current.startsWith("http")
+        ? bridgeRef.current
+        : `http://${bridgeRef.current}`;
+
+      const res = await fetch(`${baseUrl}/api/bookings/action`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: booking.id, action: "APPROVE" }),
       });
+
       if (res.ok) {
         toast.success(`Booking approved for ${booking.customer_name}`);
-        fetchBookings();
       }
     } catch (err) {
       toast.error("Failed to approve booking via Bridge");
+    } finally {
+      fetchBookings();
     }
   }, [fetchBookings]);
 
   const rejectBooking = useCallback(async (bookingId: string) => {
+    // Instant UI update
+    setBookings((prev) =>
+      prev.map((b) => (b.id === bookingId ? { ...b, status: "REJECTED" } : b))
+    );
+
     try {
-      const res = await fetch(`${bridgeRef.current}/api/bookings/action`, {
+      const baseUrl = bridgeRef.current.startsWith("http")
+        ? bridgeRef.current
+        : `http://${bridgeRef.current}`;
+
+      const res = await fetch(`${baseUrl}/api/bookings/action`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: bookingId, action: "REJECT" }),
       });
+
       if (res.ok) {
         toast.info("Booking request rejected");
-        fetchBookings();
       }
     } catch (err) {
       toast.error("Failed to reject booking via Bridge");
+    } finally {
+      fetchBookings();
     }
   }, [fetchBookings]);
 

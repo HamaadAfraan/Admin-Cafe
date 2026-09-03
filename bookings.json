@@ -1,32 +1,23 @@
 [
   {
-    "id": "BK-1788277958",
+    "id": "STR-4662",
     "customer_name": "hamad",
-    "phone": "454656",
-    "station_id": "",
-    "slot_time": "",
-    "date": "",
-    "status": "APPROVED",
-    "timestamp": 1788277958.1920042
-  },
-  {
-    "id": "BK-1788278034",
-    "customer_name": "tyty",
-    "phone": "2324",
-    "station_id": "",
-    "slot_time": "",
-    "date": "",
-    "status": "REJECTED",
-    "timestamp": 1788278034.549608
-  },
-  {
-    "id": "BK-1788278130",
-    "customer_name": "yyyyy",
-    "phone": "546456",
-    "station_id": "",
-    "slot_time": "",
-    "date": "",
-    "status": "APPROVED",
-    "timestamp": 1788278130.909102
+    "name": "hamad",
+    "phone": "3485784343",
+    "station_id": "PC",
+    "category": "PC",
+    "screen": "",
+    "duration": "30 min",
+    "team": "1 Player",
+    "slot_time": "08:30 PM - 09:00 PM",
+    "slot": "08:30 PM - 09:00 PM",
+    "price": 70,
+    "utr": "4353454",
+    "bookingDate": "Today",
+    "booking_date": "Today",
+    "date": "Today",
+    "created_time": "05:24 PM",
+    "status": "PENDING",
+    "timestamp": 1788436472.0266821
   }
 ]

@@ -13,9 +13,7 @@ from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 
 # --- CONFIGURATION FOR CLOUD & LOCAL MODE ---
-# Jab aap Render/Vercel par backend host kar lenge, tab Cloud URL yahan dalein.
-# Khali "" rakhne par yeh pura locally Ngrok / Standalone mode mein chalega.
-CLOUD_URL = ""  # Example: "https://strangers-cafe-backend.onrender.com"
+CLOUD_URL = "https://strangers-gaming-backend.onrender.com"
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -397,14 +395,13 @@ def cloud_polling_agent():
                     station_id = cmd.get("station_id")
                     minutes = cmd.get("minutes", 60)
                     process_control_logic(ip, action, station_id, minutes)
-        except Exception as e:
+        except Exception:
             pass
         time.sleep(3)
 
 if __name__ == '__main__':
     local_ip = get_local_ip()
     
-    # Start Cloud Polling Thread
     if CLOUD_URL:
         t = threading.Thread(target=cloud_polling_agent)
         t.daemon = True

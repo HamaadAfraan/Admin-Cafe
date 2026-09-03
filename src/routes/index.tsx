@@ -113,10 +113,10 @@ function Dashboard() {
 
   const active = Object.keys(mgr.sessions || {}).length;
 
-  // SAFE PENDING BOOKINGS CALCULATION (Case Insensitive Matching)
+  // SAFE & ROBUST PENDING BOOKINGS CALCULATION
   const pendingBookings = useMemo(() => {
-    const list = mgr.bookings || [];
-    return list.filter((b) => (b.status || "").toUpperCase() === "PENDING");
+    const list = Array.isArray(mgr.bookings) ? mgr.bookings : [];
+    return list.filter((b) => String(b?.status || "").trim().toUpperCase() === "PENDING");
   }, [mgr.bookings]);
 
   const pendingBookingsCount = pendingBookings.length;
@@ -132,7 +132,7 @@ function Dashboard() {
     },
   ] as const;
 
-  const historyLogs: SessionRecord[] = mgr.history || mgr.sessionHistory || [];
+  const historyLogs: SessionRecord[] = mgr.history || (mgr as any).sessionHistory || [];
 
   const filteredRecords = historyLogs.filter((log) => {
     const searchLower = recordSearch.toLowerCase();
@@ -214,12 +214,12 @@ function Dashboard() {
 
             {/* TOP HEADER BUTTONS */}
             <div className="flex items-center gap-2">
-              {/* FIXED BOOKINGS BUTTON WITH DYNAMIC RED BADGE & PULSE */}
+              {/* FIXED BOOKINGS BUTTON WITH DYNAMIC FLOATING RED BADGE */}
               <Button
                 variant="outline"
                 size="sm"
                 className={cn(
-                  "relative border-purple-500/60 bg-purple-950/40 text-purple-300 hover:bg-purple-600 hover:text-white font-bold h-9 text-xs transition-all shadow-md px-3",
+                  "relative border-purple-500/60 bg-purple-950/40 text-purple-300 hover:bg-purple-600 hover:text-white font-bold h-9 text-xs transition-all shadow-md px-3 overflow-visible",
                   pendingBookingsCount > 0 && "border-purple-400 bg-purple-900/60 text-white ring-1 ring-purple-500/50"
                 )}
                 onClick={() => setShowBookings(true)}
@@ -227,7 +227,7 @@ function Dashboard() {
                 <CalendarClock className="size-4 mr-1.5 text-purple-400" />
                 Bookings
                 {pendingBookingsCount > 0 && (
-                  <span className="ml-2 inline-flex items-center justify-center rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-extrabold text-white animate-pulse shadow-glow-danger">
+                  <span className="absolute -top-2 -right-2 flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-extrabold text-white animate-bounce shadow-lg ring-2 ring-background border border-red-400">
                     {pendingBookingsCount}
                   </span>
                 )}
@@ -303,7 +303,7 @@ function Dashboard() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {visible.map((station) => {
             const pendingForStation = (mgr.bookings || []).find(
-              (b) => b.station_id === station.id && (b.status || "").toUpperCase() === "PENDING"
+              (b) => b.station_id === station.id && String(b?.status || "").trim().toUpperCase() === "PENDING"
             );
 
             return (

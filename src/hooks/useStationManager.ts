@@ -31,10 +31,12 @@ export interface BookingRequest {
   customer_name: string;
   phone: string;
   station_id: string;
-  slot_time: string;
-  date: string;
+  slot_time?: string;
+  date?: string;
+  duration_minutes?: number;
+  players_count?: number;
   status: "PENDING" | "APPROVED" | "REJECTED" | string;
-  timestamp: number;
+  timestamp?: number;
 }
 
 export function useStationManager() {
@@ -42,7 +44,7 @@ export function useStationManager() {
   const [bridgeUrl, setBridgeUrl] = useState(DEFAULT_BRIDGE_URL);
   const [sessions, setSessions] = useState<Record<string, Session>>({});
   const [bookings, setBookings] = useState<BookingRequest[]>([]);
-  
+
   // Track previous pending count for audio alert trigger
   const prevPendingCountRef = useRef<number>(0);
   const processedSessionsRef = useRef<Set<string>>(new Set());
@@ -61,10 +63,24 @@ export function useStationManager() {
   stationsRef.current = stations;
   bridgeRef.current = bridgeUrl;
 
+  // Helper function to format Bridge URL cleanly
+  const getCleanBridgeUrl = useCallback(() => {
+    let url = bridgeRef.current || "http://localhost:5000";
+    if (!url.startsWith("http")) url = `http://${url}`;
+    return url.replace(/\/+$/, ""); // Remove trailing slash
+  }, []);
+
   // Web Audio API Beep Sound Generator
   const playNotificationSound = useCallback(() => {
     try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      
+      const ctx = new AudioCtx();
+      if (ctx.state === "suspended") {
+        ctx.resume();
+      }
+
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
 
@@ -101,18 +117,56 @@ export function useStationManager() {
     }
   }, [history]);
 
-  // --- REAL-TIME ONLINE BOOKINGS SYNC & AUDIO ALERT ---
+  // CONTROL COMMAND FUNCTION
+  const fire = useCallback(
+    (stationId: string, action: string, minutes?: number) => {
+      const station = stationsRef.current.find((s) => s.id === stationId);
+      if (!station || !station.ip || station.kind === "pc") return;
+
+      sendControl(bridgeRef.current, {
+        station_id: station.id,
+        action: action as any,
+        ip: station.ip,
+        ...(minutes ? { minutes } : {}),
+      }).catch((err) => {
+        console.error(`Bridge command error:`, err);
+      });
+    },
+    []
+  );
+
+  // START SESSION
+  const start = useCallback(
+    (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
+      const totalMs = minutes * 60_000;
+      setSessions((prev) => ({
+        ...prev,
+        [stationId]: {
+          stationId,
+          customer: customer.trim() || "Walk-in Player",
+          totalMs,
+          remainingMs: totalMs,
+          startedAt: Date.now(),
+          paused: false,
+          playerCount,
+        },
+      }));
+
+      fire(stationId, "START", minutes);
+      toast.success(`${stationId} started for ${minutes} mins`);
+    },
+    [fire]
+  );
+
+  // REAL-TIME ONLINE BOOKINGS SYNC & AUDIO ALERT
   const fetchBookings = useCallback(async () => {
     if (!bridgeRef.current) return;
     try {
-      const baseUrl = bridgeRef.current.startsWith("http")
-        ? bridgeRef.current
-        : `http://${bridgeRef.current}`;
-
+      const baseUrl = getCleanBridgeUrl();
       const res = await fetch(`${baseUrl}/api/bookings`);
       if (res.ok) {
         const data = await res.json();
-        
+
         let list: BookingRequest[] = [];
         if (Array.isArray(data)) {
           list = data;
@@ -144,9 +198,9 @@ export function useStationManager() {
         prevPendingCountRef.current = currentPendingCount;
       }
     } catch (err) {
-      // Bridge server unreachable
+      // Bridge server unreachable silently handled
     }
-  }, [playNotificationSound]);
+  }, [getCleanBridgeUrl, playNotificationSound]);
 
   // Poll online bookings every 3 seconds
   useEffect(() => {
@@ -155,16 +209,14 @@ export function useStationManager() {
     return () => clearInterval(interval);
   }, [fetchBookings]);
 
+  // APPROVE BOOKING
   const approveBooking = useCallback(async (booking: BookingRequest) => {
     setBookings((prev) =>
       prev.map((b) => (b.id === booking.id ? { ...b, status: "APPROVED" } : b))
     );
 
     try {
-      const baseUrl = bridgeRef.current.startsWith("http")
-        ? bridgeRef.current
-        : `http://${bridgeRef.current}`;
-
+      const baseUrl = getCleanBridgeUrl();
       const res = await fetch(`${baseUrl}/api/bookings/action`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -179,18 +231,26 @@ export function useStationManager() {
     } finally {
       fetchBookings();
     }
-  }, [fetchBookings]);
 
+    // Auto-Start station session upon approval
+    if (booking.station_id) {
+      start(
+        booking.station_id,
+        booking.duration_minutes || 60,
+        booking.customer_name || "Online Guest",
+        booking.players_count || 1
+      );
+    }
+  }, [fetchBookings, getCleanBridgeUrl, start]);
+
+  // REJECT BOOKING
   const rejectBooking = useCallback(async (bookingId: string) => {
     setBookings((prev) =>
       prev.map((b) => (b.id === bookingId ? { ...b, status: "REJECTED" } : b))
     );
 
     try {
-      const baseUrl = bridgeRef.current.startsWith("http")
-        ? bridgeRef.current
-        : `http://${bridgeRef.current}`;
-
+      const baseUrl = getCleanBridgeUrl();
       const res = await fetch(`${baseUrl}/api/bookings/action`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -205,7 +265,7 @@ export function useStationManager() {
     } finally {
       fetchBookings();
     }
-  }, [fetchBookings]);
+  }, [fetchBookings, getCleanBridgeUrl]);
 
   const deleteSessionHistory = useCallback((recordId: string) => {
     setHistory((prev) => prev.filter((item) => item.id !== recordId));
@@ -226,7 +286,12 @@ export function useStationManager() {
 
     const playedMs = Math.max(0, session.totalMs - session.remainingMs);
     const playedMinutes = Math.max(1, Math.round(playedMs / 60_000));
-    const sessionCost = calculateSessionCost(stationKind, playedMinutes, session.stationId, session.playerCount || 1);
+    const sessionCost = calculateSessionCost(
+      stationKind,
+      playedMinutes,
+      session.stationId,
+      session.playerCount || 1
+    );
 
     const now = new Date();
 
@@ -257,23 +322,6 @@ export function useStationManager() {
     setHistory((prev) => [record, ...prev]);
   }, []);
 
-  const fire = useCallback(
-    (stationId: string, action: string, minutes?: number) => {
-      const station = stationsRef.current.find((s) => s.id === stationId);
-      if (!station || !station.ip || station.kind === "pc") return;
-
-      sendControl(bridgeRef.current, {
-        station_id: station.id,
-        action: action as any,
-        ip: station.ip,
-        ...(minutes ? { minutes } : {}),
-      }).catch((err) => {
-        console.error(`Bridge command error:`, err);
-      });
-    },
-    []
-  );
-
   const lock = useCallback(
     (stationId: string, reason: "expired" | "forced") => {
       setSessions((prev) => {
@@ -289,7 +337,9 @@ export function useStationManager() {
 
       fire(stationId, "LOCK");
       toast[reason === "expired" ? "warning" : "error"](
-        reason === "expired" ? `${stationId} expired — TV Locked` : `${stationId} manually locked`
+        reason === "expired"
+          ? `${stationId} expired — TV Locked`
+          : `${stationId} manually locked`
       );
     },
     [fire, logSessionHistory]
@@ -327,29 +377,6 @@ export function useStationManager() {
 
     return () => clearInterval(timer);
   }, [fire, logSessionHistory]);
-
-  const start = useCallback(
-    (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
-      const totalMs = minutes * 60_000;
-      setSessions((prev) => ({
-        ...prev,
-        [stationId]: {
-          stationId,
-          customer: customer.trim() || "Walk-in Player",
-          totalMs,
-          remainingMs: totalMs,
-          startedAt: Date.now(),
-          paused: false,
-          playerCount,
-        },
-      }));
-
-      fire(stationId, "START", minutes);
-
-      toast.success(`${stationId} started for ${minutes} mins`);
-    },
-    [fire]
-  );
 
   const extend = useCallback((stationId: string, extraMins: number) => {
     setSessions((prev) => {
@@ -408,7 +435,7 @@ export function useStationManager() {
     sessions,
     history,
     bookings,
-    pendingCount, // Badge count for header/button
+    pendingCount,
     fetchBookings,
     approveBooking,
     rejectBooking,

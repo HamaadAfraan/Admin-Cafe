@@ -1,3 +1,44 @@
 [
-  
+  {
+    "bookingDate": "Today",
+    "booking_date": "Today",
+    "category": "PC",
+    "created_time": "01:41 AM",
+    "customer_name": "safdsf",
+    "date": "Today",
+    "duration": "30 min",
+    "id": "STR-8813",
+    "name": "safdsf",
+    "phone": "2342343242",
+    "price": 70,
+    "screen": "",
+    "slot": "11:00 AM - 11:30 AM",
+    "slot_time": "11:00 AM - 11:30 AM",
+    "station_id": "PC",
+    "status": "APPROVED",
+    "team": "1 Player",
+    "timestamp": 1788466269.28134,
+    "utr": "32432432"
+  },
+  {
+    "bookingDate": "Today",
+    "booking_date": "Today",
+    "category": "PC",
+    "created_time": "01:41 AM",
+    "customer_name": "ewfsdfdsfsd",
+    "date": "Today",
+    "duration": "1 hr",
+    "id": "STR-5061",
+    "name": "ewfsdfdsfsd",
+    "phone": "3242343243",
+    "price": 120,
+    "screen": "",
+    "slot": "11:00 AM - 12:00 PM",
+    "slot_time": "11:00 AM - 12:00 PM",
+    "station_id": "PC",
+    "status": "APPROVED",
+    "team": "1 Player",
+    "timestamp": 1788466287.1589334,
+    "utr": "234324324"
+  }
 ]

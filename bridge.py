@@ -29,6 +29,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(BASE_DIR, ".output", "public")
 LOCK_IMAGE_PATH = os.path.join(BASE_DIR, "assets", "lock.jpg")
 BOOKINGS_FILE = os.path.join(BASE_DIR, "bookings.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
 LAST_REQUEST_TIMES = {}
 PENDING_COMMANDS_QUEUE = []
@@ -39,15 +40,25 @@ PC_STATES = {
 }
 ACTIVE_SESSIONS = {}
 
-# --- STATION CAPACITIES ---
-STATION_CAPACITIES = {
+# --- DYNAMIC CAPACITY LOAD LOGIC (UPDATED TO EXACT CAFE UNITS) ---
+DEFAULT_CAPACITIES = {
     "PS5_55": 2,
     "PS5_43": 2,
-    "PS5": 2,
     "PS4": 1,
-    "RC WHEEL": 1,
+    "RC WHEEL": 2,
     "PC": 2
 }
+
+def load_station_capacities():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                capacities = json.load(f)
+                logging.info("[CONFIG] Loaded dynamic station capacities from config.json")
+                return capacities
+        except Exception as e:
+            logging.error(f"[CONFIG ERROR] Could not read config.json, using defaults: {e}")
+    return DEFAULT_CAPACITIES
 
 def get_local_ip():
     try:
@@ -260,7 +271,6 @@ def handle_control():
 
     res = process_control_logic(ip, action, station_id, minutes)
     
-    # Broadcast to pending queue for remote notification trigger
     PENDING_COMMANDS_QUEUE.append({
         "ip": ip,
         "action": action,
@@ -270,6 +280,24 @@ def handle_control():
     })
 
     return jsonify(res), 200
+
+def resolve_capacity_key(station_id, screen_val):
+    s_id = str(station_id).upper().strip()
+    scr = str(screen_val).strip()
+
+    if "PS5" in s_id:
+        if "55" in scr or "VIP" in scr:
+            return "PS5_55"
+        elif "43" in scr:
+            return "PS5_43"
+        return "PS5_55"
+    elif "PS4" in s_id:
+        return "PS4"
+    elif "RC" in s_id or "WHEEL" in s_id or "SIMULATOR" in s_id:
+        return "RC WHEEL"
+    elif "PC" in s_id:
+        return "PC"
+    return s_id
 
 @app.route('/api/bookings', methods=['GET', 'POST', 'OPTIONS'])
 def handle_bookings():
@@ -300,9 +328,9 @@ def handle_bookings():
 
         booking_id = str(data.get("id") or f"BK-{int(time.time())}")
         customer_name = str(data.get("customer_name") or data.get("name") or data.get("fullName") or "Guest")
-        station_id = str(data.get("station_id") or data.get("category") or data.get("platform") or "General")
-        slot_time = str(data.get("slot_time") or data.get("slot") or data.get("selectedTimeSlot") or "Immediate")
-        screen_val = str(data.get("screen") or "")
+        station_id = str(data.get("station_id") or data.get("category") or data.get("platform") or "General").strip()
+        slot_time = str(data.get("slot_time") or data.get("slot") or data.get("selectedTimeSlot") or "Immediate").strip()
+        screen_val = str(data.get("screen") or "").strip()
 
         phone_val = str(data.get("phone") or data.get("mobileNumber") or data.get("mobile") or "")
         price_val = data.get("price") or data.get("totalAmount") or data.get("amount") or 0
@@ -314,23 +342,31 @@ def handle_bookings():
 
         bookings = load_bookings()
 
-        cap_key = f"{station_id.upper()}_{'55' if '55' in str(screen_val) else ('43' if '43' in str(screen_val) else '')}".strip("_")
-        max_cap = STATION_CAPACITIES.get(cap_key, STATION_CAPACITIES.get(station_id.upper(), 2))
+        # Dynamic Capacity Fetch from config.json
+        station_capacities = load_station_capacities()
+        target_cap_key = resolve_capacity_key(station_id, screen_val)
+        max_cap = station_capacities.get(target_cap_key, DEFAULT_CAPACITIES.get(target_cap_key, 2))
 
         current_occupied_count = 0
         for b in bookings:
             if str(b.get("status")).upper() not in ["REJECTED", "CANCELLED"]:
                 b_date = str(b.get("bookingDate") or b.get("booking_date") or b.get("date") or "Today").strip()
                 b_slot = str(b.get("slot_time") or b.get("slot") or "").strip()
-                b_station = str(b.get("station_id") or b.get("category") or "").strip().lower()
+                b_station = str(b.get("station_id") or b.get("category") or "").strip()
+                b_screen = str(b.get("screen") or "").strip()
 
-                if b_date.lower() == extracted_date.lower() and b_slot == slot_time.strip() and b_station == station_id.strip().lower():
+                b_cap_key = resolve_capacity_key(b_station, b_screen)
+
+                if (b_date.lower() == extracted_date.lower() and 
+                    b_slot.lower() == slot_time.lower() and 
+                    b_cap_key == target_cap_key):
                     current_occupied_count += 1
 
         if current_occupied_count >= max_cap:
+            logging.warning(f"[SLOT FULL REJECTION] {target_cap_key} is full for slot {slot_time} on {extracted_date} ({current_occupied_count}/{max_cap})")
             return jsonify({
                 "status": "error", 
-                "message": "All screens/units are already booked for this slot!"
+                "message": f"All units for {target_cap_key} are already booked for slot ({slot_time})!"
             }), 400
 
         new_booking = {
@@ -358,7 +394,7 @@ def handle_bookings():
         bookings.append(new_booking)
         save_bookings(bookings)
 
-        logging.info(f"[ONLINE BOOKING SUCCESS] ID: {booking_id} | Name: {customer_name} | Booked @: {created_time}")
+        logging.info(f"[ONLINE BOOKING SUCCESS] ID: {booking_id} | Name: {customer_name} | Station: {target_cap_key} | Booked @: {created_time}")
         return jsonify({"status": "success", "booking": new_booking}), 201
 
     bookings = load_bookings()

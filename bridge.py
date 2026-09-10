@@ -7,15 +7,15 @@ import time
 import json
 import logging
 import threading
+from queue import Queue
 from datetime import datetime
 import requests
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 
-# --- CONFIGURATION FOR CLOUD & LOCAL MODE ---
 CLOUD_URL = "https://strangers-gaming-backend.onrender.com"
+IS_CLOUD = os.environ.get("RENDER") is not None  # Automatically detect Render execution environment
 
-# --- LOGGING SETUP ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -32,7 +32,10 @@ BOOKINGS_FILE = os.path.join(BASE_DIR, "bookings.json")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
 LAST_REQUEST_TIMES = {}
-PENDING_COMMANDS_QUEUE = []
+PENDING_COMMANDS_QUEUE = Queue()  # Thread-safe queue
+
+# In-memory storage fallback for Render cloud deployment
+MEM_BOOKINGS_CACHE = []
 
 PC_STATES = {
     "PC-1": "LOCKED",
@@ -40,7 +43,6 @@ PC_STATES = {
 }
 ACTIVE_SESSIONS = {}
 
-# --- DYNAMIC CAPACITY LOAD LOGIC (UPDATED TO EXACT CAFE UNITS) ---
 DEFAULT_CAPACITIES = {
     "PS5_55": 2,
     "PS5_43": 2,
@@ -53,11 +55,9 @@ def load_station_capacities():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
-                capacities = json.load(f)
-                logging.info("[CONFIG] Loaded dynamic station capacities from config.json")
-                return capacities
+                return json.load(f)
         except Exception as e:
-            logging.error(f"[CONFIG ERROR] Could not read config.json, using defaults: {e}")
+            logging.error(f"[CONFIG ERROR] Could not read config.json: {e}")
     return DEFAULT_CAPACITIES
 
 def get_local_ip():
@@ -71,6 +71,9 @@ def get_local_ip():
         return "127.0.0.1"
 
 def get_adb_binary():
+    if IS_CLOUD:
+        return "adb"  # Cloud instance will bypass execution logic
+
     if platform.system() == "Windows":
         win_adb = os.path.join(BASE_DIR, "bin", "adb.exe")
         return win_adb if os.path.exists(win_adb) else "adb"
@@ -89,12 +92,15 @@ def get_adb_binary():
 ADB_BIN = get_adb_binary()
 
 def ensure_adb_connected(ip):
+    if IS_CLOUD: return
     try:
         subprocess.run(f'"{ADB_BIN}" connect {ip}:5555', shell=True, capture_output=True, timeout=2)
     except Exception:
         pass
 
 def run_adb(ip, command, fast=True):
+    if IS_CLOUD:
+        return "Bypassed on Cloud"
     try:
         ensure_adb_connected(ip)
         timeout_sec = 2 if fast else 5
@@ -105,23 +111,27 @@ def run_adb(ip, command, fast=True):
         return str(e)
 
 def run_adb_async(ip, command, fast=True):
+    if IS_CLOUD: return
     thread = threading.Thread(target=run_adb, args=(ip, command, fast))
     thread.daemon = True
     thread.start()
 
 def switch_to_hdmi1(ip):
+    if IS_CLOUD: return
     run_adb_async(ip, "shell am force-stop com.mobisystems.fileman", fast=True)
     google_intent = 'shell am start -a android.intent.action.VIEW -d "content://android.media.tv/passthrough/com.google.android.tvinput%2F.hardware.HardwareInputService%2FHW0" -f 0x10000000'
     run_adb_async(ip, google_intent, fast=True)
 
 def apply_lock(ip):
     logging.info(f"[EXECUTING LOCK] Target IP: {ip}")
+    if IS_CLOUD: return
+
     def _lock_task():
         run_adb(ip, "shell input keyevent 224", fast=True)
         tv_sdcard_dir = "/sdcard/lock.jpg"
         if os.path.exists(LOCK_IMAGE_PATH):
             run_adb(ip, f'push "{LOCK_IMAGE_PATH}" {tv_sdcard_dir}', fast=False)
-            intent_cmd = f'shell am start -a android.intent.action.VIEW -d "file://{tv_sdcard_dir}" -t "image/*" -f 0x10000000'
+            intent_cmd = f'shell am start -a android.intent.action.VIEW -d "file://{tv_sdcard_dir}" -t "image/*" --grant-read-uri-permission -f 0x10000000'
             run_adb(ip, intent_cmd, fast=True)
 
     thread = threading.Thread(target=_lock_task)
@@ -148,31 +158,36 @@ KEY_EVENTS = {
 }
 
 def load_bookings():
-    if CLOUD_URL:
+    global MEM_BOOKINGS_CACHE
+    if CLOUD_URL and not IS_CLOUD:
         try:
-            resp = requests.get(f"{CLOUD_URL}/api/bookings", timeout=10)
+            resp = requests.get(f"{CLOUD_URL}/api/bookings", timeout=3)
             if resp.status_code == 200:
                 cloud_bookings = resp.json()
                 if isinstance(cloud_bookings, list):
                     return cloud_bookings
         except Exception as e:
-            logging.error(f"[CLOUD FETCH FAILED] Falling back to local file: {e}")
+            logging.error(f"[CLOUD FETCH FAILED] Falling back to local state: {e}")
 
     if os.path.exists(BOOKINGS_FILE):
         try:
             with open(BOOKINGS_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                MEM_BOOKINGS_CACHE = data
+                return data
         except Exception as e:
             logging.error(f"Error reading local bookings file: {e}")
-            return []
-    return []
+    
+    return MEM_BOOKINGS_CACHE
 
 def save_bookings(bookings):
+    global MEM_BOOKINGS_CACHE
+    MEM_BOOKINGS_CACHE = bookings
     try:
         with open(BOOKINGS_FILE, "w") as f:
             json.dump(bookings, f, indent=2)
     except Exception as e:
-        logging.error(f"Error saving bookings file: {e}")
+        logging.error(f"Error writing bookings file (Cloud/Permission Warning): {e}")
 
 @app.after_request
 def add_cors_and_ngrok_headers(response):
@@ -182,14 +197,19 @@ def add_cors_and_ngrok_headers(response):
     response.headers['ngrok-skip-browser-warning'] = 'true'
     return response
 
-# --- NOTIFICATION & PENDING COMMANDS ROUTE ---
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy", "cloud": IS_CLOUD, "timestamp": time.time()}), 200
+
 @app.route('/api/pending-commands', methods=['GET', 'OPTIONS'])
 def get_pending_commands():
     if request.method == 'OPTIONS':
         return jsonify({"status": "ok"}), 200
-    global PENDING_COMMANDS_QUEUE
-    commands_to_send = list(PENDING_COMMANDS_QUEUE)
-    PENDING_COMMANDS_QUEUE.clear()
+    
+    commands_to_send = []
+    while not PENDING_COMMANDS_QUEUE.empty():
+        commands_to_send.append(PENDING_COMMANDS_QUEUE.get())
+
     return jsonify({"status": "success", "commands": commands_to_send}), 200
 
 @app.route('/lock.jpg', methods=['GET'])
@@ -241,7 +261,7 @@ def process_control_logic(ip, action, station_id, minutes=60):
             PC_STATES[station_id] = "LOCKED"
             return {"status": "success", "message": f"{station_id} LOCKED"}
 
-    if ip:
+    if ip and not IS_CLOUD:
         if action in ["START", "PLAY", "RESUME", "INIT"]:
             run_adb_async(ip, "shell input keyevent 224", fast=True)
             run_adb_async(ip, "shell am force-stop com.mobisystems.fileman", fast=True)
@@ -271,13 +291,14 @@ def handle_control():
 
     res = process_control_logic(ip, action, station_id, minutes)
     
-    PENDING_COMMANDS_QUEUE.append({
-        "ip": ip,
-        "action": action,
-        "station_id": station_id,
-        "minutes": minutes,
-        "timestamp": time.time()
-    })
+    if IS_CLOUD:
+        PENDING_COMMANDS_QUEUE.put({
+            "ip": ip,
+            "action": action,
+            "station_id": station_id,
+            "minutes": minutes,
+            "timestamp": time.time()
+        })
 
     return jsonify(res), 200
 
@@ -308,11 +329,14 @@ def handle_bookings():
         data = request.json or {}
         logging.info(f"[INCOMING BOOKING DATA]: {data}")
 
-        if CLOUD_URL:
+        if CLOUD_URL and not IS_CLOUD:
             try:
-                requests.post(f"{CLOUD_URL}/api/bookings", json=data, timeout=10)
+                requests.post(f"{CLOUD_URL}/api/bookings", json=data, timeout=3)
             except Exception as e:
                 logging.error(f"[CLOUD SYNC FAILED ON POST]: {e}")
+
+        booking_id = str(data.get("id") or f"STR-{int(time.time() % 10000)}")
+        is_walkin = booking_id.startswith("WALKIN-")
 
         utr = str(
             data.get("utr") or 
@@ -322,11 +346,11 @@ def handle_bookings():
             ""
         ).strip()
 
-        if not utr or utr.upper() in ["N/A", "NONE", ""] or len(utr) < 3:
+        # Allow Walk-Ins without requiring UTR
+        if not is_walkin and (not utr or utr.upper() in ["N/A", "NONE", ""] or len(utr) < 3):
             logging.error(f"[REJECTED BOOKING] Invalid or missing UTR in payload: {data}")
             return jsonify({"status": "error", "message": "Valid Transaction ID / UTR is required!"}), 400
 
-        booking_id = str(data.get("id") or f"BK-{int(time.time())}")
         customer_name = str(data.get("customer_name") or data.get("name") or data.get("fullName") or "Guest")
         station_id = str(data.get("station_id") or data.get("category") or data.get("platform") or "General").strip()
         slot_time = str(data.get("slot_time") or data.get("slot") or data.get("selectedTimeSlot") or "Immediate").strip()
@@ -342,7 +366,7 @@ def handle_bookings():
 
         bookings = load_bookings()
 
-        # Dynamic Capacity Fetch from config.json
+        # Capacity Check
         station_capacities = load_station_capacities()
         target_cap_key = resolve_capacity_key(station_id, screen_val)
         max_cap = station_capacities.get(target_cap_key, DEFAULT_CAPACITIES.get(target_cap_key, 2))
@@ -370,31 +394,31 @@ def handle_bookings():
             }), 400
 
         new_booking = {
-            "id": booking_id,
-            "customer_name": customer_name,
-            "name": customer_name,
-            "phone": phone_val,
-            "station_id": station_id,
-            "category": station_id,
-            "screen": screen_val,
-            "duration": str(data.get("duration", "1 Hour")),
-            "team": str(data.get("team") or data.get("players") or "1 Player"),
-            "slot_time": slot_time,
-            "slot": slot_time,
-            "price": price_val,
-            "utr": utr,
             "bookingDate": extracted_date,
             "booking_date": extracted_date,
-            "date": extracted_date,
+            "category": station_id,
             "created_time": created_time,
-            "status": "PENDING",
-            "timestamp": time.time()
+            "customer_name": customer_name,
+            "date": extracted_date,
+            "duration": str(data.get("duration") or "1 hr"),
+            "id": booking_id,
+            "name": customer_name,
+            "phone": phone_val,
+            "price": price_val,
+            "screen": screen_val,
+            "slot": slot_time,
+            "slot_time": slot_time,
+            "station_id": station_id,
+            "status": str(data.get("status") or ("APPROVED" if is_walkin else "PENDING")).upper(),
+            "team": str(data.get("team") or data.get("players") or "1 Player"),
+            "timestamp": time.time(),
+            "utr": utr if utr else "WALKIN-CASH"
         }
 
         bookings.append(new_booking)
         save_bookings(bookings)
 
-        logging.info(f"[ONLINE BOOKING SUCCESS] ID: {booking_id} | Name: {customer_name} | Station: {target_cap_key} | Booked @: {created_time}")
+        logging.info(f"[BOOKING SUCCESS] ID: {booking_id} | Name: {customer_name} | Station: {target_cap_key}")
         return jsonify({"status": "success", "booking": new_booking}), 201
 
     bookings = load_bookings()
@@ -405,9 +429,9 @@ def delete_booking(booking_id):
     if request.method == 'OPTIONS':
         return jsonify({"status": "ok"}), 200
 
-    if CLOUD_URL:
+    if CLOUD_URL and not IS_CLOUD:
         try:
-            requests.delete(f"{CLOUD_URL}/api/bookings/{booking_id}", timeout=10)
+            requests.delete(f"{CLOUD_URL}/api/bookings/{booking_id}", timeout=3)
         except Exception as e:
             logging.error(f"[CLOUD DELETE FAILED]: {e}")
 
@@ -426,9 +450,9 @@ def action_booking():
     booking_id = data.get("id")
     action = data.get("action")
 
-    if CLOUD_URL:
+    if CLOUD_URL and not IS_CLOUD:
         try:
-            requests.post(f"{CLOUD_URL}/api/bookings/action", json=data, timeout=10)
+            requests.post(f"{CLOUD_URL}/api/bookings/action", json=data, timeout=3)
         except Exception as e:
             logging.error(f"[CLOUD ACTION FAILED]: {e}")
 
@@ -458,13 +482,13 @@ def serve_frontend(path):
     return "Frontend Build Not Found!", 404
 
 def cloud_polling_agent():
-    if not CLOUD_URL:
+    if not CLOUD_URL or IS_CLOUD:
         return
 
     logging.info(f"[CLOUD SYNC ACTIVE] Polling cloud commands from: {CLOUD_URL}")
     while True:
         try:
-            resp = requests.get(f"{CLOUD_URL}/api/pending-commands", timeout=10)
+            resp = requests.get(f"{CLOUD_URL}/api/pending-commands", timeout=3)
             if resp.status_code == 200:
                 commands = resp.json().get("commands", [])
                 for cmd in commands:
@@ -478,18 +502,24 @@ def cloud_polling_agent():
         time.sleep(3)
 
 if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
     local_ip = get_local_ip()
     
-    if CLOUD_URL:
+    if CLOUD_URL and not IS_CLOUD:
         t = threading.Thread(target=cloud_polling_agent)
         t.daemon = True
         t.start()
 
     print("==================================================")
-    print("    STRANGERS GAMING CAFE - LOCAL BACKEND BRIDGE   ")
+    print("    STRANGERS GAMING CAFE - BACKEND BRIDGE         ")
     print("==================================================")
-    print(f" * Server Local IP: http://{local_ip}:5000")
-    if CLOUD_URL:
-        print(f" * Cloud Bridge Connected to: {CLOUD_URL}")
+    print(f" * Server Host Port: {port}")
+    if IS_CLOUD:
+        print(" * Mode: CLOUD (Render Instance)")
+    else:
+        print(f" * Server Local IP: http://{local_ip}:{port}")
+        if CLOUD_URL:
+            print(f" * Cloud Bridge Connected to: {CLOUD_URL}")
     print("==================================================")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    
+    app.run(host='0.0.0.0', port=port, debug=False)

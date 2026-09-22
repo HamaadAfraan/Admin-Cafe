@@ -142,4 +142,31 @@
     color: var(--color-foreground);
     font-family: var(--font-sans);
   }
+
+  /* Sleek Dark Custom Scrollbar for Modals and Elements */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: oklch(0.15 0.015 20);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.35 0.12 25);
+    border-radius: 9999px;
+    border: 1px solid oklch(0.28 0.05 25);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--primary);
+  }
+
+  /* Firefox Support */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: oklch(0.35 0.12 25) oklch(0.15 0.015 20);
+  }
 }

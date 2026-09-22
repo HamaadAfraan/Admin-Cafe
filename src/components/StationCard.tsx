@@ -6,6 +6,7 @@ import {
   Pause, 
   Play, 
   Lock, 
+  Unlock,
   User, 
   Users,
   Home, 
@@ -34,8 +35,8 @@ import type { BookingRequest } from "@/hooks/useStationManager";
 
 const ICONS = { ps5: Gamepad2, ps4: Gamepad2, pc: Monitor, sim: Car } as const;
 
-// UPDATED: Presets set to 10m, 30m, and 60m (1h)
-const PRESETS = [10, 30, 60];
+// Presets set to 10m, 15m, 30m, and 60m (1h)
+const PRESETS = [10, 15, 30, 60];
 
 function formatPlayedTime(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -114,6 +115,9 @@ export function StationCard({
 
   const lockTriggeredRef = useRef(false);
 
+  // Strict Check: Banner & Notifications ONLY for actual PENDING requests
+  const isActualPending = !!pendingBooking && String(pendingBooking.status).toUpperCase() === "PENDING";
+
   const Icon = ICONS[station.kind] || Gamepad2;
   const expiring = !!session && session.remainingMs <= 5 * 60_000;
   const pct = session ? ((session.totalMs - session.remainingMs) / session.totalMs) * 100 : 0;
@@ -121,17 +125,18 @@ export function StationCard({
   const isVip = station.id === "PS5-01" || station.id === "PS5-02";
   const isPs5 = station.kind === "ps5";
   const isConsole = station.kind === "ps5" || station.kind === "ps4";
+  const isPcStation = station.kind === "pc";
   const maxPlayers = (kind: string, vip: boolean) => (kind === "ps5" && !vip ? 3 : 4);
 
   const theme = getCategorySpecificTheme(station.kind, station.id, isVip);
 
-  // Auto-fill customer info if pending booking exists
+  // Auto-fill customer info ONLY if actual pending booking exists
   useEffect(() => {
-    if (pendingBooking && !session) {
-      setCustomerName(pendingBooking.customer_name);
-      setCustomerPhone(pendingBooking.phone);
+    if (isActualPending && pendingBooking && !session) {
+      setCustomerName(pendingBooking.customer_name || pendingBooking.customer || "");
+      setCustomerPhone(pendingBooking.phone || "");
     }
-  }, [pendingBooking, session]);
+  }, [isActualPending, pendingBooking, session]);
 
   useEffect(() => {
     if (session) {
@@ -170,10 +175,19 @@ export function StationCard({
               <Icon className="size-5" />
             </div>
             <div>
-              <div className="flex items-center gap-1.5">
-                <p className="font-display text-base font-black tracking-widest text-white drop-shadow">
-                  {station.id}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {/* Station Name */}
+                <p className="font-display text-base font-black tracking-wide text-white drop-shadow">
+                  {station.name || station.id}
                 </p>
+
+                {/* Chhota ID badge (SIM-03) agar name alag hai */}
+                {station.name && station.name !== station.id && (
+                  <span className="rounded border border-slate-700 bg-black/60 px-1 py-0.2 text-[9px] font-mono text-slate-300">
+                    {station.id}
+                  </span>
+                )}
+
                 {isPs5 && isVip && (
                   <span className="flex items-center gap-0.5 rounded border px-1.5 py-0.5 text-[9px] font-black uppercase text-amber-300 bg-red-950/90 border-red-500 shadow-sm shadow-red-900/50">
                     <Crown className="size-3 text-amber-400 fill-amber-400/20" /> VIP (55″)
@@ -208,19 +222,19 @@ export function StationCard({
 
           <span
             className={cn(
-              "rounded-full border px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider shadow-sm",
-              !session && !pendingBooking && "border-emerald-500/60 bg-emerald-950/80 text-emerald-300",
-              !session && pendingBooking && "border-purple-500/80 bg-purple-950/90 text-purple-300 animate-pulse",
+              "rounded-full border px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider shadow-sm shrink-0",
+              !session && !isActualPending && "border-emerald-500/60 bg-emerald-950/80 text-emerald-300",
+              !session && isActualPending && "border-purple-500/80 bg-purple-950/90 text-purple-300 animate-pulse",
               session && !expiring && "border-amber-500/60 bg-amber-950/80 text-amber-300",
               expiring && "border-red-500/80 bg-red-950/90 text-red-300",
             )}
           >
-            {!session ? (pendingBooking ? "Booking Req" : "Available") : expiring ? "Expiring" : "In Session"}
+            {!session ? (isActualPending ? "Booking Req" : "Available") : expiring ? "Expiring" : "In Session"}
           </span>
         </div>
 
         {/* ONLINE BOOKING NOTIFICATION OVERLAY */}
-        {!session && pendingBooking && (
+        {!session && isActualPending && pendingBooking && (
           <div className="mt-3 p-2.5 rounded-lg border border-purple-500/50 bg-purple-950/40 backdrop-blur space-y-2">
             <div className="flex items-center justify-between text-xs text-purple-200 font-bold">
               <span className="flex items-center gap-1">
@@ -228,11 +242,11 @@ export function StationCard({
                 Online Booking Requested
               </span>
               <span className="text-[10px] text-purple-300 bg-purple-900/60 px-1.5 py-0.5 rounded">
-                {pendingBooking.slot_time || "Today"}
+                {pendingBooking.slot_time || pendingBooking.slot || "Today"}
               </span>
             </div>
             <div className="text-xs text-white">
-              <p className="font-black text-amber-300">{pendingBooking.customer_name}</p>
+              <p className="font-black text-amber-300">{pendingBooking.customer_name || pendingBooking.customer || "Customer"}</p>
               <p className="text-[11px] text-slate-300 flex items-center gap-1">
                 <Phone className="size-3" /> {pendingBooking.phone || "No phone provided"}
               </p>
@@ -240,7 +254,7 @@ export function StationCard({
             <div className="grid grid-cols-2 gap-1.5 pt-1">
               <Button
                 size="sm"
-                className="h-7 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white"
+                className="h-7 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
                 onClick={() => {
                   if (onApproveBooking) onApproveBooking(pendingBooking);
                 }}
@@ -250,7 +264,7 @@ export function StationCard({
               <Button
                 size="sm"
                 variant="outline"
-                className="h-7 text-xs font-bold border-red-500/60 text-red-400 hover:bg-red-950"
+                className="h-7 text-xs font-bold border-red-500/60 text-red-400 hover:bg-red-950 cursor-pointer"
                 onClick={() => {
                   if (onRejectBooking) onRejectBooking(pendingBooking.id);
                 }}
@@ -300,21 +314,21 @@ export function StationCard({
               />
             </div>
 
-            <div className="grid grid-cols-3 gap-1.5">
-              {[15, 30, 60].map((m) => (
-                <Button key={m} variant="outline" size="sm" className="border-amber-500/40 bg-amber-950/30 text-amber-200 hover:bg-amber-500 hover:text-black font-bold" onClick={() => onExtend(m)}>
-                  +{m}m
+            <div className="grid grid-cols-4 gap-1.5">
+              {PRESETS.map((m) => (
+                <Button key={m} variant="outline" size="sm" className="border-amber-500/40 bg-amber-950/30 text-amber-200 hover:bg-amber-500 hover:text-black font-bold cursor-pointer" onClick={() => onExtend(m)}>
+                  +{m >= 60 ? `${m / 60}h` : `${m}m`}
                 </Button>
               ))}
             </div>
 
             <div className="grid grid-cols-2 gap-1.5">
-              <Button variant="outline" size="sm" className="border-slate-700 bg-slate-900/80 text-white hover:bg-slate-800" onClick={onTogglePause}>
+              <Button variant="outline" size="sm" className="border-slate-700 bg-slate-900/80 text-white hover:bg-slate-800 cursor-pointer" onClick={onTogglePause}>
                 {session.paused ? <Play className="size-3.5 mr-1 text-emerald-400" /> : <Pause className="size-3.5 mr-1 text-amber-400" />}
                 {session.paused ? "Resume" : "Pause"}
               </Button>
 
-              <Button variant="destructive" size="sm" className="font-bold bg-red-600 hover:bg-red-700" onClick={() => {
+              <Button variant="destructive" size="sm" className="font-bold bg-red-600 hover:bg-red-700 cursor-pointer" onClick={() => {
                 if (!lockTriggeredRef.current) {
                   lockTriggeredRef.current = true;
                   if (onControl && station.ip) {
@@ -363,7 +377,7 @@ export function StationCard({
                       variant={playerCount === p ? "default" : "outline"}
                       size="sm"
                       className={cn(
-                        "h-8 text-xs font-extrabold transition-all",
+                        "h-8 text-xs font-extrabold transition-all cursor-pointer",
                         playerCount === p 
                           ? cn(theme.startBtn, "border-transparent shadow-md") 
                           : "bg-black/40 border-slate-800 text-slate-300 hover:border-slate-600"
@@ -387,14 +401,13 @@ export function StationCard({
               </div>
             )}
 
-            {/* PRESETS: 10m, 30m, 1h + Custom */}
-            <div className="grid grid-cols-4 gap-1.5">
+            <div className="grid grid-cols-5 gap-1.5">
               {PRESETS.map((m) => (
                 <Button
                   key={m}
                   variant={!custom && minutes === m ? "default" : "outline"}
                   size="sm"
-                  className={!custom && minutes === m ? cn(theme.startBtn, "font-black") : "bg-black/40 border-slate-800 text-slate-300"}
+                  className={!custom && minutes === m ? cn(theme.startBtn, "font-black cursor-pointer") : "bg-black/40 border-slate-800 text-slate-300 cursor-pointer"}
                   onClick={() => {
                     setCustom(false);
                     setMinutes(m);
@@ -406,7 +419,7 @@ export function StationCard({
               <Button
                 variant={custom ? "default" : "outline"}
                 size="sm"
-                className={custom ? cn(theme.startBtn, "font-black") : "bg-black/40 border-slate-800 text-slate-300"}
+                className={custom ? cn(theme.startBtn, "font-black cursor-pointer") : "bg-black/40 border-slate-800 text-slate-300 cursor-pointer"}
                 onClick={() => setCustom(true)}
               >
                 Custom
@@ -424,7 +437,7 @@ export function StationCard({
             )}
 
             <Button
-              className={cn("w-full font-black tracking-wider shadow-lg transition-all py-2", theme.startBtn)}
+              className={cn("w-full font-black tracking-wider shadow-lg transition-all py-2 cursor-pointer", theme.startBtn)}
               onClick={() => {
                 const displayName = customerName.trim() 
                   ? customerPhone.trim() 
@@ -442,104 +455,144 @@ export function StationCard({
         )}
       </div>
 
-      {onControl && station.ip && station.kind !== "pc" && (
+      {/* CONTROLS SECTION */}
+      {onControl && station.ip && (
         <div className="mt-4 border-t border-slate-800/80 pt-3 w-full">
-          <div className="flex items-center justify-between mb-2">
-            <span className={cn("text-[10px] font-black uppercase tracking-widest", theme.accentText)}>
-              TV Remote Control
-            </span>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[10px] border-red-800/80 bg-red-950/90 text-red-300 hover:bg-red-600 hover:text-white font-bold transition-all shadow-sm active:scale-95"
-              title="Turn TV Off"
-              onClick={() => onControl(station.id, "POWER_OFF", station.ip!)}
-            >
-              <Power className="size-3 mr-1 text-red-400 fill-red-400/20" /> TV OFF
-            </Button>
-          </div>
+          {/* PC HARDWARE & SSH LOCK CONTROLS */}
+          {isPcStation ? (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className={cn("text-[10px] font-black uppercase tracking-widest", theme.accentText)}>
+                  PC Remote Controls
+                </span>
+                <span className="text-[10px] font-mono text-slate-400 bg-black/60 px-1.5 py-0.5 rounded border border-slate-800">
+                  {station.ip}
+                </span>
+              </div>
 
-          <div className="grid grid-cols-4 gap-1 mb-2 w-full">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-1 text-[10px] border-emerald-800/80 bg-emerald-950/80 text-emerald-300 hover:bg-emerald-600 hover:text-white font-bold w-full"
-              title="Turn TV On (Wakeup)"
-              onClick={() => onControl(station.id, "POWER_ON", station.ip!)}
-            >
-              <Power className="size-3 mr-1 text-emerald-400" /> TV ON
-            </Button>
+              <div className="grid grid-cols-2 gap-1.5 w-full">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 px-2 text-xs border-red-800/80 bg-red-950/80 text-red-300 hover:bg-red-600 hover:text-white font-bold w-full cursor-pointer transition-all active:scale-95"
+                  title="Send SSH Lock Command to PC"
+                  onClick={() => onControl(station.id, "LOCK", station.ip!)}
+                >
+                  <Lock className="size-3.5 mr-1 text-red-400" /> Lock PC
+                </Button>
 
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-1 text-[10px] border-amber-800/80 bg-amber-950/80 text-amber-300 hover:bg-amber-600 hover:text-white font-bold w-full"
-              title="Lock TV Screen Image"
-              onClick={() => {
-                if (onControl && station.ip) {
-                  onControl(station.id, "LOCK", station.ip);
-                }
-              }}
-            >
-              <Lock className="size-3 mr-1" /> Lock
-            </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 px-2 text-xs border-emerald-800/80 bg-emerald-950/80 text-emerald-300 hover:bg-emerald-600 hover:text-white font-bold w-full cursor-pointer transition-all active:scale-95"
+                  title="Unlock PC / Wake Up"
+                  onClick={() => onControl(station.id, "UNLOCK", station.ip!)}
+                >
+                  <Unlock className="size-3.5 mr-1 text-emerald-400" /> Unlock PC
+                </Button>
+              </div>
+            </div>
+          ) : (
+            /* CONSOLE TV REMOTE CONTROLS */
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className={cn("text-[10px] font-black uppercase tracking-widest", theme.accentText)}>
+                  TV Remote Control
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[10px] border-red-800/80 bg-red-950/90 text-red-300 hover:bg-red-600 hover:text-white font-bold transition-all shadow-sm active:scale-95 cursor-pointer"
+                  title="Turn TV Off"
+                  onClick={() => onControl(station.id, "POWER_OFF", station.ip!)}
+                >
+                  <Power className="size-3 mr-1 text-red-400 fill-red-400/20" /> TV OFF
+                </Button>
+              </div>
 
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-1 text-[10px] border-slate-800 bg-black/60 text-slate-200 hover:bg-slate-700 hover:text-white w-full"
-              title="Input Source (HDMI 1)"
-              onClick={() => onControl(station.id, "HDMI", station.ip!)}
-            >
-              <Tv className="size-3 mr-1" /> HDMI 1
-            </Button>
+              <div className="grid grid-cols-4 gap-1 mb-2 w-full">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-1 text-[10px] border-emerald-800/80 bg-emerald-950/80 text-emerald-300 hover:bg-emerald-600 hover:text-white font-bold w-full cursor-pointer"
+                  title="Turn TV On (Wakeup)"
+                  onClick={() => onControl(station.id, "POWER_ON", station.ip!)}
+                >
+                  <Power className="size-3 mr-1 text-emerald-400" /> TV ON
+                </Button>
 
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-1 text-[10px] border-slate-800 bg-black/60 text-slate-200 hover:bg-slate-700 hover:text-white w-full"
-              title="Input Source (HDMI 2)"
-              onClick={() => onControl(station.id, "HDMI2", station.ip!)}
-            >
-              <Tv className="size-3 mr-1" /> HDMI 2
-            </Button>
-          </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-1 text-[10px] border-amber-800/80 bg-amber-950/80 text-amber-300 hover:bg-amber-600 hover:text-white font-bold w-full cursor-pointer"
+                  title="Lock TV Screen Image"
+                  onClick={() => {
+                    if (onControl && station.ip) {
+                      onControl(station.id, "LOCK", station.ip);
+                    }
+                  }}
+                >
+                  <Lock className="size-3 mr-1" /> Lock
+                </Button>
 
-          <div className="grid grid-cols-5 gap-1 bg-black/60 p-1.5 rounded-lg border border-slate-800 w-full items-center justify-items-center">
-            <Button size="sm" variant="ghost" className="h-8 w-full p-0 text-slate-400 hover:bg-slate-800 hover:text-white" onClick={() => onControl(station.id, "LEFT", station.ip!)}>
-              <ChevronLeft className="size-4 mx-auto" />
-            </Button>
-            <Button size="sm" variant="ghost" className="h-8 w-full p-0 text-slate-400 hover:bg-slate-800 hover:text-white" onClick={() => onControl(station.id, "UP", station.ip!)}>
-              <ChevronUp className="size-4 mx-auto" />
-            </Button>
-            <Button size="sm" variant="default" className={cn("h-8 w-full p-0 font-bold text-white", theme.startBtn)} onClick={() => onControl(station.id, "OK", station.ip!)}>
-              <CircleDot className="size-4 mx-auto" />
-            </Button>
-            <Button size="sm" variant="ghost" className="h-8 w-full p-0 text-slate-400 hover:bg-slate-800 hover:text-white" onClick={() => onControl(station.id, "DOWN", station.ip!)}>
-              <ChevronDown className="size-4 mx-auto" />
-            </Button>
-            <Button size="sm" variant="ghost" className="h-8 w-full p-0 text-slate-400 hover:bg-slate-800 hover:text-white" onClick={() => onControl(station.id, "RIGHT", station.ip!)}>
-              <ChevronRight className="size-4 mx-auto" />
-            </Button>
-          </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-1 text-[10px] border-slate-800 bg-black/60 text-slate-200 hover:bg-slate-700 hover:text-white w-full cursor-pointer"
+                  title="Input Source (HDMI 1)"
+                  onClick={() => onControl(station.id, "HDMI", station.ip!)}
+                >
+                  <Tv className="size-3 mr-1" /> HDMI 1
+                </Button>
 
-          <div className="grid grid-cols-5 gap-1 mt-1.5 w-full">
-            <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-400 hover:text-white bg-black/40 hover:bg-slate-800 w-full" onClick={() => onControl(station.id, "HOME", station.ip!)}>
-              <Home className="size-3 mr-1" /> Home
-            </Button>
-            <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-400 hover:text-white bg-black/40 hover:bg-slate-800 w-full" onClick={() => onControl(station.id, "BACK", station.ip!)}>
-              <ArrowLeft className="size-3 mr-1" /> Back
-            </Button>
-            <Button size="sm" variant="ghost" className="h-7 text-xs text-red-400 hover:text-red-300 bg-red-950/40 hover:bg-red-900/60 w-full" onClick={() => onControl(station.id, "MUTE", station.ip!)}>
-              <VolumeX className="size-3" />
-            </Button>
-            <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-300 hover:text-white bg-black/40 hover:bg-slate-800 w-full" onClick={() => onControl(station.id, "VOL_DOWN", station.ip!)}>
-              <Volume1 className="size-3" /> -
-            </Button>
-            <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-300 hover:text-white bg-black/40 hover:bg-slate-800 w-full" onClick={() => onControl(station.id, "VOL_UP", station.ip!)}>
-              <Volume2 className="size-3" /> +
-            </Button>
-          </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-1 text-[10px] border-slate-800 bg-black/60 text-slate-200 hover:bg-slate-700 hover:text-white w-full cursor-pointer"
+                  title="Input Source (HDMI 2)"
+                  onClick={() => onControl(station.id, "HDMI2", station.ip!)}
+                >
+                  <Tv className="size-3 mr-1" /> HDMI 2
+                </Button>
+              </div>
+
+              <div className="grid grid-cols-5 gap-1 bg-black/60 p-1.5 rounded-lg border border-slate-800 w-full items-center justify-items-center">
+                <Button size="sm" variant="ghost" className="h-8 w-full p-0 text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer" onClick={() => onControl(station.id, "LEFT", station.ip!)}>
+                  <ChevronLeft className="size-4 mx-auto" />
+                </Button>
+                <Button size="sm" variant="ghost" className="h-8 w-full p-0 text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer" onClick={() => onControl(station.id, "UP", station.ip!)}>
+                  <ChevronUp className="size-4 mx-auto" />
+                </Button>
+                <Button size="sm" variant="default" className={cn("h-8 w-full p-0 font-bold text-white cursor-pointer", theme.startBtn)} onClick={() => onControl(station.id, "OK", station.ip!)}>
+                  <CircleDot className="size-4 mx-auto" />
+                </Button>
+                <Button size="sm" variant="ghost" className="h-8 w-full p-0 text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer" onClick={() => onControl(station.id, "DOWN", station.ip!)}>
+                  <ChevronDown className="size-4 mx-auto" />
+                </Button>
+                <Button size="sm" variant="ghost" className="h-8 w-full p-0 text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer" onClick={() => onControl(station.id, "RIGHT", station.ip!)}>
+                  <ChevronRight className="size-4 mx-auto" />
+                </Button>
+              </div>
+
+              <div className="grid grid-cols-5 gap-1 mt-1.5 w-full">
+                <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-400 hover:text-white bg-black/40 hover:bg-slate-800 w-full cursor-pointer" onClick={() => onControl(station.id, "HOME", station.ip!)}>
+                  <Home className="size-3 mr-1" /> Home
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-400 hover:text-white bg-black/40 hover:bg-slate-800 w-full cursor-pointer" onClick={() => onControl(station.id, "BACK", station.ip!)}>
+                  <ArrowLeft className="size-3 mr-1" /> Back
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs text-red-400 hover:text-red-300 bg-red-950/40 hover:bg-red-900/60 w-full cursor-pointer" onClick={() => onControl(station.id, "MUTE", station.ip!)}>
+                  <VolumeX className="size-3" />
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-300 hover:text-white bg-black/40 hover:bg-slate-800 w-full cursor-pointer" onClick={() => onControl(station.id, "VOL_DOWN", station.ip!)}>
+                  <Volume1 className="size-3" /> -
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-300 hover:text-white bg-black/40 hover:bg-slate-800 w-full cursor-pointer" onClick={() => onControl(station.id, "VOL_UP", station.ip!)}>
+                  <Volume2 className="size-3" /> +
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

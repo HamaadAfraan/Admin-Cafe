@@ -14,6 +14,7 @@ import {
 import { StationCard } from "@/components/StationCard";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { BookingsModal } from "@/components/BookingsModal";
+import { ConsoleScheduleModal } from "@/components/ConsoleScheduleModal";
 import { useStationManager, type SessionRecord } from "@/hooks/useStationManager";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -53,7 +54,7 @@ function formatDisplayDate(record: SessionRecord): string {
 
   if (diffDays === 0) return "Today";
   if (diffDays === 1) return "Yesterday";
-  
+
   return record.date || recordDate.toLocaleDateString("en-IN", {
     day: "2-digit",
     month: "short",
@@ -62,17 +63,16 @@ function formatDisplayDate(record: SessionRecord): string {
 }
 
 const CAFE_STATIONS: Station[] = [
-  { id: "SIM-01", kind: "sim", ip: "192.168.1.150" },
-  { id: "SIM-02", kind: "sim", ip: "192.168.1.151" },
-  { id: "PS5-01", kind: "ps5", ip: "192.168.1.153" },
-  { id: "PS5-02", kind: "ps5", ip: "192.168.1.154" },
-  { id: "PS5-03", kind: "ps5", ip: "192.168.1.155" },
-  { id: "PS5-04", kind: "ps5", ip: "192.168.1.156" },
-  { id: "PS4-01", kind: "ps4", ip: "192.168.1.157" },
-  { id: "PC-01", kind: "pc", ip: "192.168.1.50", hostname: "stranger-pc-1" },
-  { id: "PC-02", kind: "pc", ip: "192.168.1.51", hostname: "stranger-pc-2" },
-  { id: "PC-03", kind: "pc", ip: "192.168.1.52", hostname: "stranger-pc-3" },
-  { id: "PC-04", kind: "pc", ip: "192.168.1.53", hostname: "stranger-pc-4" },
+  { id: "SIM-01", name: "Car-Sim-1", kind: "sim", ip: "192.168.1.150" },
+  { id: "SIM-02", name: "Car-Sim-2", kind: "sim", ip: "192.168.1.151" },
+  { id: "PS5-01", name: "PS5-01", kind: "ps5", ip: "192.168.1.153" },
+  { id: "PS5-02", name: "PS5-02", kind: "ps5", ip: "192.168.1.154" },
+  { id: "PS5-03", name: "PS5-03", kind: "ps5", ip: "192.168.1.155" },
+  { id: "PS5-04", name: "PS5-04", kind: "ps5", ip: "192.168.1.156" },
+  { id: "PS4-01", name: "PS4-01", kind: "ps4", ip: "192.168.1.157" },
+  { id: "SIM-03", name: "Truck-Sim-1", kind: "pc", ip: "192.168.1.52", hostname: "stranger-pc-3" },
+  { id: "PC-01", name: "PC-01", kind: "pc", ip: "192.168.1.50", hostname: "stranger-pc-1" },
+  { id: "PC-02", name: "PC-02", kind: "pc", ip: "192.168.1.51", hostname: "stranger-pc-2" },
 ];
 
 const FILTERS: { key: "all" | StationKind; label: string }[] = [
@@ -95,21 +95,28 @@ function Dashboard() {
 
   const stations = CAFE_STATIONS;
 
-  const visible = useMemo(
-    () => (filter === "all" ? stations : stations.filter((s) => s.kind === filter)),
-    [stations, filter]
-  );
+  const visible = useMemo(() => {
+    if (filter === "all") return stations;
+    if (filter === "sim") {
+      return stations.filter((s) => s.kind === "sim" || s.id.startsWith("SIM-"));
+    }
+    if (filter === "pc") {
+      return stations.filter((s) => s.kind === "pc" && !s.id.startsWith("SIM-"));
+    }
+    return stations.filter((s) => s.kind === filter);
+  }, [stations, filter]);
 
   const active = Object.keys(mgr.sessions || {}).length;
 
-  // DYNAMIC BADGE COUNT FOR PENDING BOOKINGS
   const pendingBookingsCount = useMemo(() => {
-    if (typeof mgr.pendingCount === "number" && mgr.pendingCount > 0) {
-      return mgr.pendingCount;
-    }
     const list = Array.isArray(mgr.bookings) ? mgr.bookings : [];
-    return list.filter((b) => String(b?.status || "").trim().toUpperCase() === "PENDING").length;
-  }, [mgr.bookings, mgr.pendingCount]);
+    return list.filter((b) => {
+      const isPending = String(b?.status || "").trim().toUpperCase() === "PENDING";
+      const isNotAdminBlock = !String(b?.customer_name || "").toLowerCase().includes("walk-in") &&
+                             !String(b?.customer_name || "").toLowerCase().includes("reserved");
+      return isPending && isNotAdminBlock;
+    }).length;
+  }, [mgr.bookings]);
 
   const stats = [
     { label: "Total Stations", value: String(stations.length), icon: MonitorSmartphone },
@@ -135,7 +142,8 @@ function Dashboard() {
       custName.includes(searchLower) ||
       stId.toLowerCase().includes(searchLower) ||
       logDate.includes(searchLower) ||
-      displayDateStr.includes(searchLower);
+      displayDateStr.includes(searchLower) ||
+      (stId.startsWith("SIM") && "simulator".includes(searchLower));
 
     if (!matchesSearch) return false;
 
@@ -146,8 +154,8 @@ function Dashboard() {
     if (cat === "vip") return stId === "PS5-01" || stId === "PS5-02";
     if (cat === "ps5") return logKind === "ps5" && stId !== "PS5-01" && stId !== "PS5-02";
     if (cat === "ps4") return logKind === "ps4";
-    if (cat === "pc") return logKind === "pc";
-    if (cat === "sim") return logKind === "sim";
+    if (cat === "pc") return logKind === "pc" && !stId.startsWith("SIM-");
+    if (cat === "sim") return logKind === "sim" || stId.startsWith("SIM-");
 
     return true;
   });
@@ -195,9 +203,7 @@ function Dashboard() {
               </div>
             </div>
 
-            {/* TOP HEADER BUTTONS */}
-            <div className="flex items-center gap-2">
-              {/* BOOKINGS BUTTON WITH DYNAMIC RED BADGE */}
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
@@ -216,7 +222,6 @@ function Dashboard() {
                 )}
               </Button>
 
-              {/* RECORDS BUTTON */}
               <Button
                 variant="outline"
                 size="sm"
@@ -226,7 +231,18 @@ function Dashboard() {
                 <FileText className="size-4 mr-1.5" /> Records
               </Button>
 
-              {/* SETTINGS DIALOG */}
+              <ConsoleScheduleModal 
+                stations={stations} 
+                sessions={mgr.sessions || {}} 
+                onManualBlockSlot={(stationId, startTime, durationMins) => {
+                  if (mgr.createAdminBlock) {
+                    mgr.createAdminBlock(stationId, startTime, durationMins);
+                  } else {
+                    mgr.start?.(stationId, durationMins, `Admin Block (${startTime})`, 1);
+                  }
+                }}
+              />
+
               <SettingsDialog
                 stations={stations}
                 bridgeUrl={mgr.bridgeUrl}
@@ -285,9 +301,17 @@ function Dashboard() {
       <section className="mx-auto max-w-[1500px] px-5 py-6">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {visible.map((station) => {
-            const pendingForStation = (mgr.bookings || []).find(
-              (b) => b.station_id === station.id && String(b?.status || "").trim().toUpperCase() === "PENDING"
-            );
+            const pendingForStation = (mgr.bookings || []).find((b) => {
+              if (b.station_id !== station.id) return false;
+              
+              const statusStr = String(b?.status || "").trim().toUpperCase();
+              const custName = String(b?.customer_name || b?.customer || "").toLowerCase();
+              
+              const isPending = statusStr === "PENDING";
+              const isNotAdminBlock = !custName.includes("walk-in") && !custName.includes("reserved") && !custName.includes("admin block");
+
+              return isPending && isNotAdminBlock;
+            });
 
             return (
               <StationCard
@@ -315,7 +339,6 @@ function Dashboard() {
         </div>
       </section>
 
-      {/* ONLINE BOOKINGS MODAL */}
       <BookingsModal
         open={showBookings}
         onOpenChange={setShowBookings}
@@ -324,7 +347,6 @@ function Dashboard() {
         onReject={(bId) => mgr.rejectBooking(bId)}
       />
 
-      {/* CUSTOMER RECORDS MODAL */}
       {showRecords && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
           <div className="relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-xl border border-red-900/60 bg-card p-5 shadow-2xl">
@@ -371,7 +393,7 @@ function Dashboard() {
                   { id: "ps5", label: "PS5 Standard" },
                   { id: "ps4", label: "PS4 Zone" },
                   { id: "pc", label: "PC Arena" },
-                  { id: "sim", label: "Racing Sim" },
+                  { id: "sim", label: "Simulators" },
                 ].map((cat) => (
                   <Button
                     key={cat.id}
@@ -432,7 +454,7 @@ function Dashboard() {
                           variant="ghost"
                           className="h-7 w-7 text-muted-foreground hover:bg-red-950/50 hover:text-red-400 border border-transparent hover:border-red-500/40 transition-all ml-1"
                           title="Delete Record"
-                          onClick={() => mgr.deleteSessionHistory?.(log.id)}
+                          onClick={() => (mgr as any).deleteSessionHistory?.(log.id)}
                         >
                           <X className="size-4" />
                         </Button>

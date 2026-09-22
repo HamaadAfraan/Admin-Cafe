@@ -23,6 +23,8 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
+
+# Complete CORS Support
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,9 +34,9 @@ BOOKINGS_FILE = os.path.join(BASE_DIR, "bookings.json")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
 LAST_REQUEST_TIMES = {}
-PENDING_COMMANDS_QUEUE = Queue()  # Thread-safe queue
+PENDING_COMMANDS_QUEUE = Queue()  # Thread-safe queue for Cloud-to-Local bridge polling
 
-# In-memory storage fallback for Render cloud deployment
+# In-memory storage fallback
 MEM_BOOKINGS_CACHE = []
 
 PC_STATES = {
@@ -51,15 +53,6 @@ DEFAULT_CAPACITIES = {
     "PC": 2
 }
 
-def load_station_capacities():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            logging.error(f"[CONFIG ERROR] Could not read config.json: {e}")
-    return DEFAULT_CAPACITIES
-
 def get_local_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -70,9 +63,86 @@ def get_local_ip():
     except Exception:
         return "127.0.0.1"
 
+# --- SSH / Remote PC Lock Execution Helper ---
+def execute_pc_command(ip, action):
+    """Executes SSH / System Commands to Lock/Unlock Remote PCs."""
+    if IS_CLOUD or not ip:
+        return
+    
+    def _pc_task():
+        try:
+            logging.info(f"[PC CONTROL] Target IP: {ip} | Action: {action}")
+            # If bridge runs directly on the local Windows PC
+            if ip in ["127.0.0.1", "localhost", get_local_ip()]:
+                if action in ["LOCK", "EXPIRE", "STOP", "SESSION_EXPIRE", "EXPIRE_LOCK", "END"]:
+                    if platform.system() == "Windows":
+                        subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
+                return
+
+            # Remote PC execution over SSH
+            ssh_user = "Administrator" # Adjust as needed for local client PCs
+            if action in ["LOCK", "EXPIRE", "STOP", "SESSION_EXPIRE", "EXPIRE_LOCK", "END"]:
+                cmd = f'ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 {ssh_user}@{ip} "rundll32.exe user32.dll,LockWorkStation"'
+            elif action in ["UNLOCK", "WAKE", "START", "PLAY"]:
+                cmd = f'ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 {ssh_user}@{ip} "powershell -command (New-Object -ComObject WScript.Shell).SendKeys(\'{{ESC}}\')"'
+            else:
+                return
+
+            subprocess.run(cmd, shell=True, capture_output=True, timeout=3)
+        except Exception as e:
+            logging.error(f"[PC CONTROL ERROR] Failed to send {action} to PC at {ip}: {e}")
+
+    thread = threading.Thread(target=_pc_task)
+    thread.daemon = True
+    thread.start()
+
+# --- Time Parsing & Overlap Helper Functions ---
+def parse_time_to_minutes(time_str):
+    try:
+        parts = time_str.strip().split(' ')
+        time_parts = parts[0].split(':')
+        hours = int(time_parts[0])
+        minutes = int(time_parts[1])
+        modifier = parts[1].upper() if len(parts) > 1 else 'AM'
+
+        if modifier == 'PM' and hours < 12:
+            hours += 12
+        if modifier == 'AM' and hours == 12:
+            hours = 0
+
+        return hours * 60 + minutes
+    except Exception:
+        return 0
+
+def is_slot_overlapping(slot_a, slot_b):
+    try:
+        if not slot_a or not slot_b or '-' not in slot_a or '-' not in slot_b:
+            return slot_a.strip().lower() == slot_b.strip().lower()
+
+        start_a_str, end_a_str = slot_a.split('-')
+        start_b_str, end_b_str = slot_b.split('-')
+
+        start_a = parse_time_to_minutes(start_a_str)
+        end_a = parse_time_to_minutes(end_a_str)
+        start_b = parse_time_to_minutes(start_b_str)
+        end_b = parse_time_to_minutes(end_b_str)
+
+        return start_a < end_b and end_a > start_b
+    except Exception:
+        return slot_a.strip().lower() == slot_b.strip().lower()
+
+def load_station_capacities():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"[CONFIG ERROR] Could not read config.json: {e}")
+    return DEFAULT_CAPACITIES
+
 def get_adb_binary():
     if IS_CLOUD:
-        return "adb"  # Cloud instance will bypass execution logic
+        return "adb"
 
     if platform.system() == "Windows":
         win_adb = os.path.join(BASE_DIR, "bin", "adb.exe")
@@ -92,14 +162,14 @@ def get_adb_binary():
 ADB_BIN = get_adb_binary()
 
 def ensure_adb_connected(ip):
-    if IS_CLOUD: return
+    if IS_CLOUD or not ip: return
     try:
         subprocess.run(f'"{ADB_BIN}" connect {ip}:5555', shell=True, capture_output=True, timeout=2)
     except Exception:
         pass
 
 def run_adb(ip, command, fast=True):
-    if IS_CLOUD:
+    if IS_CLOUD or not ip:
         return "Bypassed on Cloud"
     try:
         ensure_adb_connected(ip)
@@ -111,20 +181,20 @@ def run_adb(ip, command, fast=True):
         return str(e)
 
 def run_adb_async(ip, command, fast=True):
-    if IS_CLOUD: return
+    if IS_CLOUD or not ip: return
     thread = threading.Thread(target=run_adb, args=(ip, command, fast))
     thread.daemon = True
     thread.start()
 
 def switch_to_hdmi1(ip):
-    if IS_CLOUD: return
+    if IS_CLOUD or not ip: return
     run_adb_async(ip, "shell am force-stop com.mobisystems.fileman", fast=True)
     google_intent = 'shell am start -a android.intent.action.VIEW -d "content://android.media.tv/passthrough/com.google.android.tvinput%2F.hardware.HardwareInputService%2FHW0" -f 0x10000000'
     run_adb_async(ip, google_intent, fast=True)
 
 def apply_lock(ip):
-    logging.info(f"[EXECUTING LOCK] Target IP: {ip}")
-    if IS_CLOUD: return
+    logging.info(f"[EXECUTING TV LOCK] Target IP: {ip}")
+    if IS_CLOUD or not ip: return
 
     def _lock_task():
         run_adb(ip, "shell input keyevent 224", fast=True)
@@ -189,6 +259,16 @@ def save_bookings(bookings):
     except Exception as e:
         logging.error(f"Error writing bookings file (Cloud/Permission Warning): {e}")
 
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = app.make_default_options_response()
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, ngrok-skip-browser-warning'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS, PUT'
+        response.headers['ngrok-skip-browser-warning'] = 'true'
+        return response
+
 @app.after_request
 def add_cors_and_ngrok_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -203,9 +283,6 @@ def health_check():
 
 @app.route('/api/pending-commands', methods=['GET', 'OPTIONS'])
 def get_pending_commands():
-    if request.method == 'OPTIONS':
-        return jsonify({"status": "ok"}), 200
-    
     commands_to_send = []
     while not PENDING_COMMANDS_QUEUE.empty():
         commands_to_send.append(PENDING_COMMANDS_QUEUE.get())
@@ -248,19 +325,24 @@ def process_control_logic(ip, action, station_id, minutes=60):
     LAST_REQUEST_TIMES[req_key] = now
     logging.info(f"[EXECUTING] Station: {station_id} | Action: {action} | IP: {ip}")
 
+    # Track active sessions
     if action in ["START", "PLAY", "RESUME", "INIT"]:
         ACTIVE_SESSIONS[station_id] = {"start_time": now, "end_time": now + (minutes * 60)}
     elif action in ["LOCK", "EXPIRE", "SESSION_EXPIRE", "EXPIRE_LOCK", "STOP", "END"]:
         ACTIVE_SESSIONS.pop(station_id, None)
 
+    # --- SPECIFIC PC LOGIC ---
     if "PC" in station_id:
         if action in ["START", "PLAY", "RESUME", "INIT", "UNLOCK"]:
             PC_STATES[station_id] = "UNLOCKED"
+            execute_pc_command(ip, "UNLOCK")
             return {"status": "success", "message": f"{station_id} UNLOCKED"}
         elif action in ["LOCK", "EXPIRE", "SESSION_EXPIRE", "EXPIRE_LOCK", "STOP", "END"]:
             PC_STATES[station_id] = "LOCKED"
+            execute_pc_command(ip, "LOCK")
             return {"status": "success", "message": f"{station_id} LOCKED"}
 
+    # --- SPECIFIC TV / CONSOLE ADB LOGIC ---
     if ip and not IS_CLOUD:
         if action in ["START", "PLAY", "RESUME", "INIT"]:
             run_adb_async(ip, "shell input keyevent 224", fast=True)
@@ -280,9 +362,6 @@ def process_control_logic(ip, action, station_id, minutes=60):
 
 @app.route('/api/control', methods=['POST', 'OPTIONS'])
 def handle_control():
-    if request.method == 'OPTIONS':
-        return jsonify({"status": "ok"}), 200
-
     data = request.json or {}
     ip = data.get('ip', '')
     action = str(data.get('action', '')).upper().strip()
@@ -322,9 +401,6 @@ def resolve_capacity_key(station_id, screen_val):
 
 @app.route('/api/bookings', methods=['GET', 'POST', 'OPTIONS'])
 def handle_bookings():
-    if request.method == 'OPTIONS':
-        return jsonify({"status": "ok"}), 200
-
     if request.method == 'POST':
         data = request.json or {}
         logging.info(f"[INCOMING BOOKING DATA]: {data}")
@@ -346,7 +422,6 @@ def handle_bookings():
             ""
         ).strip()
 
-        # Allow Walk-Ins without requiring UTR
         if not is_walkin and (not utr or utr.upper() in ["N/A", "NONE", ""] or len(utr) < 3):
             logging.error(f"[REJECTED BOOKING] Invalid or missing UTR in payload: {data}")
             return jsonify({"status": "error", "message": "Valid Transaction ID / UTR is required!"}), 400
@@ -366,7 +441,6 @@ def handle_bookings():
 
         bookings = load_bookings()
 
-        # Capacity Check
         station_capacities = load_station_capacities()
         target_cap_key = resolve_capacity_key(station_id, screen_val)
         max_cap = station_capacities.get(target_cap_key, DEFAULT_CAPACITIES.get(target_cap_key, 2))
@@ -382,8 +456,8 @@ def handle_bookings():
                 b_cap_key = resolve_capacity_key(b_station, b_screen)
 
                 if (b_date.lower() == extracted_date.lower() and 
-                    b_slot.lower() == slot_time.lower() and 
-                    b_cap_key == target_cap_key):
+                    b_cap_key == target_cap_key and 
+                    is_slot_overlapping(b_slot, slot_time)):
                     current_occupied_count += 1
 
         if current_occupied_count >= max_cap:
@@ -426,9 +500,6 @@ def handle_bookings():
 
 @app.route('/api/bookings/<booking_id>', methods=['DELETE', 'OPTIONS'])
 def delete_booking(booking_id):
-    if request.method == 'OPTIONS':
-        return jsonify({"status": "ok"}), 200
-
     if CLOUD_URL and not IS_CLOUD:
         try:
             requests.delete(f"{CLOUD_URL}/api/bookings/{booking_id}", timeout=3)
@@ -443,9 +514,6 @@ def delete_booking(booking_id):
 
 @app.route('/api/bookings/action', methods=['POST', 'OPTIONS'])
 def action_booking():
-    if request.method == 'OPTIONS':
-        return jsonify({"status": "ok"}), 200
-
     data = request.json or {}
     booking_id = data.get("id")
     action = data.get("action")

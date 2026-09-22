@@ -2,6 +2,7 @@ export type StationKind = "ps5" | "ps4" | "pc" | "sim";
 
 export type Station = {
   id: string;
+  name?: string;
   kind: StationKind;
   ip: string;
   hostname?: string;
@@ -36,20 +37,20 @@ export const RATE_PER_HOUR: Record<StationKind, number> = {
 export const PRICING_TABLE: Record<string, Record<number, { p30: number; p60: number }>> = {
   ps5_vip: {
     1: { p30: 100, p60: 180 },
-    2: { p30: 160, p60: 300 },
-    3: { p30: 210, p60: 400 },
-    4: { p30: 260, p60: 500 },
+    2: { p30: 160, p60: 250 },
+    3: { p30: 210, p60: 320 },
+    4: { p30: 260, p60: 400 },
   },
   ps5: {
     1: { p30: 80, p60: 150 },
-    2: { p30: 100, p60: 200 },
-    3: { p30: 150, p60: 300 },
+    2: { p30: 120, p60: 200 },
+    3: { p30: 150, p60: 280 },
   },
   ps4: {
     1: { p30: 50, p60: 100 },
     2: { p30: 100, p60: 160 },
-    3: { p30: 150, p60: 250 },
-    4: { p30: 180, p60: 300 },
+    3: { p30: 150, p60: 240 },
+    4: { p30: 180, p60: 280 },
   },
   pc: {
     1: { p30: 70, p60: 120 },
@@ -67,8 +68,14 @@ export function calculateDynamicPrice(
 ): { amount: number; rateType: string } {
   if (totalPlayedMinutes <= 0) return { amount: 0, rateType: "30m Rate" };
 
+  const isSimulator = kind === "sim" || stationId.startsWith("SIM-");
+
+  if (isSimulator && totalPlayedMinutes <= 10) {
+    return { amount: 50, rateType: "10m Rate" };
+  }
+
   const isVip = stationId === "PS5-01" || stationId === "PS5-02";
-  const categoryKey = kind === "ps5" && isVip ? "ps5_vip" : kind;
+  const categoryKey = isSimulator ? "sim" : (kind === "ps5" && isVip ? "ps5_vip" : kind);
 
   const category = PRICING_TABLE[categoryKey] ?? PRICING_TABLE["ps5"] ?? {};
   const rates = category[players] ?? category[1] ?? { p30: 0, p60: 0 };
@@ -103,17 +110,16 @@ export function calculateSessionCost(
 
 export function buildStations(): Station[] {
   return [
-    { id: "SIM-01", kind: "sim", ip: "192.168.1.150" },
-    { id: "SIM-02", kind: "sim", ip: "192.168.1.151" },
-    { id: "PS5-01", kind: "ps5", ip: "192.168.1.153" },
-    { id: "PS5-02", kind: "ps5", ip: "192.168.1.154" },
-    { id: "PS5-03", kind: "ps5", ip: "192.168.1.155" },
-    { id: "PS5-04", kind: "ps5", ip: "192.168.1.156" },
-    { id: "PS4-01", kind: "ps4", ip: "192.168.1.157" },
-    { id: "PC-01", kind: "pc", ip: "192.168.1.50", hostname: "stranger-pc-1" },
-    { id: "PC-02", kind: "pc", ip: "192.168.1.51", hostname: "stranger-pc-2" },
-    { id: "PC-03", kind: "pc", ip: "192.168.1.52", hostname: "stranger-pc-3" },
-    { id: "PC-04", kind: "pc", ip: "192.168.1.53", hostname: "stranger-pc-4" },
+    { id: "SIM-01", name: "Car-Sim-1", kind: "sim", ip: "192.168.1.150" },
+    { id: "SIM-02", name: "Car-Sim-2", kind: "sim", ip: "192.168.1.151" },
+    { id: "PS5-01", name: "PS5-01", kind: "ps5", ip: "192.168.1.153" },
+    { id: "PS5-02", name: "PS5-02", kind: "ps5", ip: "192.168.1.154" },
+    { id: "PS5-03", name: "PS5-03", kind: "ps5", ip: "192.168.1.155" },
+    { id: "PS5-04", name: "PS5-04", kind: "ps5", ip: "192.168.1.156" },
+    { id: "PS4-01", name: "PS4-01", kind: "ps4", ip: "192.168.1.157" },
+    { id: "SIM-03", name: "Truck-Sim-1", kind: "pc", ip: "192.168.1.52", hostname: "stranger-pc-3" },
+    { id: "PC-01", name: "PC-01", kind: "pc", ip: "192.168.1.50", hostname: "stranger-pc-1" },
+    { id: "PC-02", name: "PC-02", kind: "pc", ip: "192.168.1.51", hostname: "stranger-pc-2" },
   ];
 }
 

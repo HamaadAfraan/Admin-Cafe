@@ -34,6 +34,7 @@ export interface BookingRequest {
   name?: string;
   phone?: string;
   station_id?: string;
+  stationId?: string;
   platform?: string;
   category?: string;
   screen?: string | null;
@@ -45,7 +46,8 @@ export interface BookingRequest {
   timeSlot?: string;
   price?: number;
   amount?: number;
-  utr?: string;
+  total_amount?: number;
+  utr?: string | number;
   bookingDate?: string;
   bookingdate?: string;
   booking_date?: string;
@@ -62,6 +64,7 @@ export interface BookingRequest {
   time?: string;
   booking_time?: string;
   timestamp?: number | string;
+  type?: string;
   status: "PENDING" | "APPROVED" | "REJECTED" | string;
 }
 
@@ -74,8 +77,19 @@ const getApiBaseUrl = () => {
   return 'http://localhost:5000';
 };
 
+// Date Formatter: Formats a Date object to "22-Sept-2026"
+const formatDateToReadable = (d: Date): string => {
+  const day = String(d.getDate()).padStart(2, '0');
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
+  const month = monthNames[d.getMonth()];
+  const year = d.getFullYear();
+  return `${day}-${month}-${year}`;
+};
+
 const extractBookingDay = (bookingObj: any): string => {
-  if (!bookingObj || typeof bookingObj !== 'object') return "Today";
+  if (!bookingObj || typeof bookingObj !== 'object') {
+    return formatDateToReadable(new Date());
+  }
 
   const possibleVal = 
     bookingObj.bookingDate || 
@@ -86,13 +100,33 @@ const extractBookingDay = (bookingObj: any): string => {
     bookingObj.slotDate;
 
   if (possibleVal && typeof possibleVal === 'string') {
-    return possibleVal;
+    const trimmed = possibleVal.trim();
+    const lower = trimmed.toLowerCase();
+
+    // If string is "today", convert to today's date
+    if (lower === "today") {
+      return formatDateToReadable(new Date());
+    }
+
+    // If string is "tomorrow", convert to tomorrow's date
+    if (lower === "tomorrow") {
+      const tom = new Date();
+      tom.setDate(tom.getDate() + 1);
+      return formatDateToReadable(tom);
+    }
+
+    // Try parsing as ISO/standard date string
+    const parsed = new Date(trimmed);
+    if (!isNaN(parsed.getTime()) && trimmed.length >= 8) {
+      return formatDateToReadable(parsed);
+    }
+
+    return trimmed;
   }
 
-  return "Today";
+  return formatDateToReadable(new Date());
 };
 
-// Robust function to extract exact time per unique booking matching backend created_time
 const extractTimeFromBooking = (b: any): string => {
   if (!b) return "N/A";
 
@@ -113,12 +147,10 @@ const extractTimeFromBooking = (b: any): string => {
 
   const strVal = String(rawTime).trim();
 
-  // 1. If string is already formatted (e.g., "02:41 PM")
   if (/am|pm/i.test(strVal)) {
     return strVal;
   }
 
-  // 2. HH:MM 24-hour string format (e.g. "14:41")
   if (/^\d{1,2}:\d{2}$/.test(strVal)) {
     const [h, m] = strVal.split(':').map(Number);
     const period = h >= 12 ? 'PM' : 'AM';
@@ -126,7 +158,6 @@ const extractTimeFromBooking = (b: any): string => {
     return `${String(hour12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
   }
 
-  // 3. Unix epoch timestamp or ISO string dynamic parsing
   try {
     const numTs = typeof rawTime === 'number' ? (rawTime < 1e11 ? rawTime * 1000 : rawTime) : Number(strVal);
     const d = !isNaN(numTs) ? new Date(numTs) : new Date(strVal);
@@ -138,20 +169,24 @@ const extractTimeFromBooking = (b: any): string => {
       });
     }
   } catch (e) {
-    // Fallback below
+    // Fallback
   }
 
   return strVal || "N/A";
 };
 
-// Helper to check if an approved booking slot has ended
 const isBookingSlotExpired = (booking: BookingRequest): boolean => {
   try {
     const slotStr = booking.slot_time || booking.slot || booking.time_slot || booking.timeSlot || "";
     if (!slotStr) return false;
 
-    const day = extractBookingDay(booking).toLowerCase();
-    if (day.includes("tomorrow")) return false; 
+    const formattedDay = extractBookingDay(booking);
+    const todayStr = formatDateToReadable(new Date());
+
+    // If booking is for a future date, it's not expired
+    if (formattedDay !== todayStr) {
+      return false; 
+    }
 
     const parts = slotStr.split("-");
     const endTimeStr = (parts.length > 1 ? parts[1] : parts[0]).trim();
@@ -174,6 +209,23 @@ const isBookingSlotExpired = (booking: BookingRequest): boolean => {
   } catch {
     return false;
   }
+};
+
+const isWalkInBooking = (b: BookingRequest): boolean => {
+  if (!b) return false;
+  const idStr = String(b.id || "").toUpperCase();
+  const custName = String(b.customer_name || b.customer || b.name || "").toLowerCase();
+  const bType = String(b.type || "").toUpperCase();
+
+  return (
+    idStr.startsWith("WLK") ||
+    idStr.startsWith("WALKIN") ||
+    custName.includes("walk-in") ||
+    custName.includes("walkin") ||
+    custName.includes("admin block") ||
+    custName.includes("reserved") ||
+    bType === "WALK_IN"
+  );
 };
 
 interface Props {
@@ -219,13 +271,40 @@ export function BookingsModal({
     const apiData = await fetchBackendBookings();
 
     if (apiData && Array.isArray(apiData) && apiData.length > 0) {
-      setLocalBookings(apiData);
-      localStorage.setItem('strangers_bookings', JSON.stringify(apiData));
+      const normalizedApiData = apiData.map((b) => {
+        if (isWalkInBooking(b)) {
+          return { ...b, status: "APPROVED" };
+        }
+        return b;
+      });
+      setLocalBookings(normalizedApiData);
+      try {
+        localStorage.setItem('strangers_bookings', JSON.stringify(normalizedApiData));
+      } catch (e) {}
       setLoading(false);
       return;
     }
 
-    const sourceData = initialBookings || [];
+    // Offline / Backend Fallback via LocalStorage
+    try {
+      const saved = localStorage.getItem('strangers_bookings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setLocalBookings(parsed);
+          setLoading(false);
+          return;
+        }
+      }
+    } catch (e) {}
+
+    // Fallback to props
+    const sourceData = (initialBookings || []).map((b) => {
+      if (isWalkInBooking(b)) {
+        return { ...b, status: "APPROVED" };
+      }
+      return b;
+    });
     setLocalBookings(sourceData);
     setLoading(false);
   };
@@ -233,12 +312,12 @@ export function BookingsModal({
   useEffect(() => {
     if (open) {
       syncBookingsData();
-    }
-    const interval = setInterval(() => {
-      if (open) syncBookingsData();
-    }, 2500);
+      const interval = setInterval(() => {
+        syncBookingsData();
+      }, 3000);
 
-    return () => clearInterval(interval);
+      return () => clearInterval(interval);
+    }
   }, [open]);
 
   const saveAndSetBookings = (updatedList: BookingRequest[]) => {
@@ -251,7 +330,7 @@ export function BookingsModal({
     }
   };
 
-  const triggerBackendAction = async (id: string, action: "APPROVE" | "REJECT") => {
+  const triggerBackendAction = async (id: string, action: "APPROVE" | "REJECT", stationId?: string) => {
     try {
       await fetch(`${getApiBaseUrl()}/api/bookings/action`, {
         method: 'POST',
@@ -259,7 +338,7 @@ export function BookingsModal({
           'Content-Type': 'application/json',
           'ngrok-skip-browser-warning': 'true'
         },
-        body: JSON.stringify({ id, action })
+        body: JSON.stringify({ id, action, station_id: stationId, stationId })
       });
     } catch (e) {
       console.error("Failed sync:", e);
@@ -267,12 +346,32 @@ export function BookingsModal({
   };
 
   const handleApprove = (b: BookingRequest) => {
-    onApprove(b);
-    triggerBackendAction(b.id, "APPROVE");
-    const updated = localBookings.map(item => item.id === b.id ? { ...item, status: 'APPROVED' as const } : item);
+    let assignedStationId = b.station_id || b.stationId;
+    const platformKind = (b.platform || b.category || "").toUpperCase();
+
+    if (!assignedStationId || assignedStationId === b.platform) {
+      if (platformKind.includes("PS4")) assignedStationId = "PS4-01";
+      else if (platformKind.includes("PS5")) assignedStationId = "PS5-01";
+      else if (platformKind.includes("SIM")) assignedStationId = "SIM-01";
+      else if (platformKind.includes("PC")) assignedStationId = "PC-01";
+      else assignedStationId = b.platform || "PS4-01";
+    }
+
+    const updatedBooking: BookingRequest = { 
+      ...b, 
+      status: 'APPROVED' as const,
+      station_id: assignedStationId,
+      stationId: assignedStationId
+    };
+
+    onApprove(updatedBooking);
+    triggerBackendAction(b.id, "APPROVE", assignedStationId);
+
+    const updated = localBookings.map(item => item.id === b.id ? updatedBooking : item);
     saveAndSetBookings(updated);
+
     if (selectedBooking?.id === b.id) {
-      setSelectedBooking(prev => prev ? { ...prev, status: 'APPROVED' } : null);
+      setSelectedBooking(updatedBooking);
     }
   };
 
@@ -314,11 +413,11 @@ export function BookingsModal({
 
     localBookings.forEach((b) => {
       const st = String(b.status).toUpperCase();
-      if (st === "PENDING") {
+      if (st === "PENDING" && !isWalkInBooking(b)) {
         toKeep.push(b);
       } else if (st === "REJECTED") {
         toDelete.push(b);
-      } else if (st === "APPROVED") {
+      } else if (st === "APPROVED" || isWalkInBooking(b)) {
         if (isBookingSlotExpired(b)) {
           toDelete.push(b);
         } else {
@@ -350,26 +449,35 @@ export function BookingsModal({
     if (!b) return false;
     let matchesFilter = true;
 
-    const bDateNormalized = extractBookingDay(b).toLowerCase().trim();
+    const bDateNormalized = extractBookingDay(b);
+    const todayStr = formatDateToReadable(new Date());
+
+    const tom = new Date();
+    tom.setDate(tom.getDate() + 1);
+    const tomStr = formatDateToReadable(tom);
+
+    const effectiveStatus = isWalkInBooking(b) ? "APPROVED" : String(b.status).toUpperCase();
     
     if (filter === "TODAY") {
-      matchesFilter = bDateNormalized === "today";
+      matchesFilter = bDateNormalized === todayStr;
     } else if (filter === "TOMORROW") {
-      matchesFilter = bDateNormalized === "tomorrow";
+      matchesFilter = bDateNormalized === tomStr;
     } else if (filter !== "ALL") {
-      matchesFilter = String(b.status).toUpperCase() === filter;
+      matchesFilter = effectiveStatus === filter;
     }
 
     const name = b.customer_name || b.customer || b.name || "";
     const station = b.station_id || b.platform || b.category || "";
     const searchLower = search.toLowerCase();
+    const utrStr = String(b.utr || "").toLowerCase();
 
     const matchesSearch = 
       name.toLowerCase().includes(searchLower) ||
-      (b.phone && b.phone.includes(search)) ||
-      (b.utr && b.utr.toLowerCase().includes(searchLower)) ||
+      (b.phone && String(b.phone).includes(search)) ||
+      utrStr.includes(searchLower) ||
       station.toLowerCase().includes(searchLower) ||
-      (b.id && b.id.toLowerCase().includes(searchLower));
+      (b.id && String(b.id).toLowerCase().includes(searchLower)) ||
+      bDateNormalized.toLowerCase().includes(searchLower);
 
     return matchesFilter && matchesSearch;
   });
@@ -378,10 +486,13 @@ export function BookingsModal({
     const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
     const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
     if (timeA && timeB) return timeB - timeA;
-    return (b.id || "").localeCompare(a.id || "");
+    return String(b.id || "").localeCompare(String(a.id || ""));
   });
 
-  const pendingCount = safeBookings.filter((b) => String(b?.status).toUpperCase() === "PENDING").length;
+  const pendingCount = safeBookings.filter((b) => {
+    if (isWalkInBooking(b)) return false;
+    return String(b?.status).toUpperCase() === "PENDING";
+  }).length;
 
   return (
     <>
@@ -425,7 +536,7 @@ export function BookingsModal({
             <div className="relative flex-1">
               <Search className="absolute left-3 top-2.5 size-4 text-slate-400" />
               <Input
-                placeholder="Search by name, phone, UTR, station, or ID..."
+                placeholder="Search by name, phone, UTR, date (e.g. 22-Sept-2026)..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-9 bg-slate-900 border-slate-700 text-xs text-white placeholder:text-slate-500"
@@ -458,12 +569,15 @@ export function BookingsModal({
               </div>
             ) : (
               sortedBookings.map((b) => {
+                const isWalkIn = isWalkInBooking(b);
+                const statusStr = isWalkIn ? "APPROVED" : String(b.status).toUpperCase();
                 const displaySlot = b.slot_time || b.slot || b.time_slot || b.timeSlot || "Immediate";
-                const station = b.station_id || b.platform || b.category || "";
+                const station = b.station_id || b.stationId || b.platform || b.category || "";
                 const displayStation = b.screen ? `${station} (${b.screen})` : station;
-                const customerName = b.customer_name || b.customer || b.name || "Customer";
+                const customerName = b.customer_name || b.customer || b.name || (isWalkIn ? "Walk-In Customer" : "Customer");
                 const bookingDay = extractBookingDay(b);
-                const isExpired = String(b.status).toUpperCase() === "APPROVED" && isBookingSlotExpired(b);
+                const isExpired = statusStr === "APPROVED" && isBookingSlotExpired(b);
+                const displayAmount = b.price || b.amount || b.total_amount || 0;
 
                 return (
                   <div
@@ -488,23 +602,19 @@ export function BookingsModal({
 
                           <Badge
                             className={`text-[9px] font-black uppercase px-1.5 py-0.5 ${
-                              b.status === "PENDING"
+                              statusStr === "PENDING"
                                 ? "bg-purple-950 border-purple-500 text-purple-300 animate-pulse"
-                                : b.status === "APPROVED"
+                                : statusStr === "APPROVED"
                                 ? isExpired 
                                   ? "bg-slate-800 border-slate-600 text-slate-400"
                                   : "bg-emerald-950 border-emerald-500 text-emerald-300"
                                 : "bg-red-950 border-red-500 text-red-300"
                             }`}
                           >
-                            {b.status === "APPROVED" && isExpired ? "COMPLETED" : b.status}
+                            {statusStr === "APPROVED" && isExpired ? "COMPLETED" : statusStr}
                           </Badge>
 
-                          <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold flex items-center gap-1 border ${
-                            bookingDay.toLowerCase() === 'tomorrow'
-                              ? 'bg-amber-950/80 border-amber-500/50 text-amber-300'
-                              : 'bg-purple-950/80 border-purple-500/50 text-purple-300'
-                          }`}>
+                          <span className="px-1.5 py-0.2 rounded text-[10px] font-bold flex items-center gap-1 border bg-amber-950/80 border-amber-500/50 text-amber-300">
                             <Calendar className="size-3" /> {bookingDay}
                           </span>
                         </div>
@@ -519,6 +629,14 @@ export function BookingsModal({
                             <Clock className="size-3.5 text-cyan-400" />
                             {displaySlot}
                           </span>
+                          {displayAmount > 0 && (
+                            <>
+                              <span>•</span>
+                              <span className="flex items-center text-emerald-400 font-bold">
+                                ₹{displayAmount}
+                              </span>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -534,7 +652,7 @@ export function BookingsModal({
                         <Eye className="size-4" />
                       </Button>
 
-                      {b.status === "PENDING" && (
+                      {!isWalkIn && statusStr === "PENDING" && (
                         <>
                           <Button
                             size="sm"
@@ -572,7 +690,7 @@ export function BookingsModal({
         </DialogContent>
       </Dialog>
 
-      {/* RECEIPT DIALOG WITH ACCURATE CREATED_TIME FIX */}
+      {/* RECEIPT DIALOG */}
       <Dialog open={!!selectedBooking} onOpenChange={() => setSelectedBooking(null)}>
         <DialogContent className="max-w-md bg-slate-950 border-slate-800 text-white p-5">
           <DialogHeader className="text-center pb-3 border-b border-slate-800">
@@ -582,7 +700,9 @@ export function BookingsModal({
             <DialogTitle className="text-lg font-black tracking-wider uppercase text-amber-400">
               BOOKING DETAILS RECEIPT
             </DialogTitle>
-            <p className="text-[11px] text-slate-400">Client-Side Reservation Information</p>
+            <p className="text-[11px] text-slate-400">
+              {selectedBooking && isWalkInBooking(selectedBooking) ? "Admin Walk-In Reservation" : "Client-Side Reservation Information"}
+            </p>
             {selectedBooking && (
               <div className="mt-2 inline-block px-3 py-1 bg-amber-500/10 border border-amber-500/30 rounded-full font-mono text-amber-300 font-bold text-xs">
                 BOOKING ID: {selectedBooking.id}
@@ -615,7 +735,7 @@ export function BookingsModal({
                   <User className="size-3.5 text-sky-400" /> Customer Name:
                 </span>
                 <span className="font-bold text-white">
-                  {selectedBooking.customer_name || selectedBooking.customer || selectedBooking.name || "N/A"}
+                  {selectedBooking.customer_name || selectedBooking.customer || selectedBooking.name || (isWalkInBooking(selectedBooking) ? "Walk-In Customer" : "N/A")}
                 </span>
               </div>
 
@@ -631,7 +751,7 @@ export function BookingsModal({
                   <Gamepad2 className="size-3.5 text-amber-400" /> Station / Platform:
                 </span>
                 <span className="font-bold text-amber-300">
-                  {selectedBooking.station_id || selectedBooking.platform || selectedBooking.category || "N/A"}
+                  {selectedBooking.station_id || selectedBooking.stationId || selectedBooking.platform || selectedBooking.category || "N/A"}
                   {selectedBooking.screen ? ` (${selectedBooking.screen})` : ""}
                 </span>
               </div>
@@ -658,7 +778,7 @@ export function BookingsModal({
                 <span className="text-slate-400 flex items-center gap-1.5">
                   <Receipt className="size-3.5 text-amber-400" /> Transaction UTR / Ref:
                 </span>
-                <span className="font-mono text-amber-300">{selectedBooking.utr || "N/A"}</span>
+                <span className="font-mono text-amber-300">{selectedBooking.utr ? String(selectedBooking.utr) : (isWalkInBooking(selectedBooking) ? "WALK-IN / CASH" : "N/A")}</span>
               </div>
 
               <div className="flex justify-between items-center pt-2">
@@ -666,14 +786,14 @@ export function BookingsModal({
                   <IndianRupee className="size-3.5 text-emerald-400" /> Total Amount Paid:
                 </span>
                 <span className="text-base font-black text-emerald-400">
-                  ₹{selectedBooking.price || selectedBooking.amount || "0"}
+                  ₹{selectedBooking.price || selectedBooking.amount || selectedBooking.total_amount || "0"}
                 </span>
               </div>
             </div>
           )}
 
           <div className="pt-3 flex gap-2">
-            {selectedBooking?.status === "PENDING" && (
+            {selectedBooking && !isWalkInBooking(selectedBooking) && selectedBooking.status === "PENDING" && (
               <>
                 <Button
                   className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs"

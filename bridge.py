@@ -24,7 +24,7 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
-# Complete CORS Support
+# Complete CORS Support across all routes
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +32,8 @@ DIST_DIR = os.path.join(BASE_DIR, ".output", "public")
 LOCK_IMAGE_PATH = os.path.join(BASE_DIR, "assets", "lock.jpg")
 BOOKINGS_FILE = os.path.join(BASE_DIR, "bookings.json")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+TIMINGS_FILE = os.path.join(BASE_DIR, "cafe_timing.json")  # Cafe Timings JSON
+SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")    # Global Settings JSON
 
 LAST_REQUEST_TIMES = {}
 PENDING_COMMANDS_QUEUE = Queue()  # Thread-safe queue for Cloud-to-Local bridge polling
@@ -53,6 +55,13 @@ DEFAULT_CAPACITIES = {
     "PC": 2
 }
 
+# --- Specific SSH Scheduled Task Lock Mapping ---
+PC_SSH_CONFIGS = {
+    "192.168.1.50": 'ssh -o BatchMode=yes stranger-main@192.168.1.50 "schtasks /run /tn LockStrangerMain"',
+    "192.168.1.51": 'ssh -o BatchMode=yes stranger@192.168.1.51 "schtasks /run /tn LockMyPC"',
+    "192.168.1.53": 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "truck simulator"@192.168.1.53 "schtasks /run /tn LockTruckSimulator"'
+}
+
 def get_local_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -65,30 +74,28 @@ def get_local_ip():
 
 # --- SSH / Remote PC Lock Execution Helper ---
 def execute_pc_command(ip, action):
-    """Executes SSH / System Commands to Lock/Unlock Remote PCs."""
+    """Executes Verified SSH Scheduled Tasks to Lock Remote PCs."""
     if IS_CLOUD or not ip:
         return
     
     def _pc_task():
         try:
             logging.info(f"[PC CONTROL] Target IP: {ip} | Action: {action}")
-            # If bridge runs directly on the local Windows PC
-            if ip in ["127.0.0.1", "localhost", get_local_ip()]:
-                if action in ["LOCK", "EXPIRE", "STOP", "SESSION_EXPIRE", "EXPIRE_LOCK", "END"]:
-                    if platform.system() == "Windows":
-                        subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
-                return
-
-            # Remote PC execution over SSH
-            ssh_user = "Administrator" # Adjust as needed for local client PCs
+            
             if action in ["LOCK", "EXPIRE", "STOP", "SESSION_EXPIRE", "EXPIRE_LOCK", "END"]:
-                cmd = f'ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 {ssh_user}@{ip} "rundll32.exe user32.dll,LockWorkStation"'
+                cmd = PC_SSH_CONFIGS.get(ip)
+                if cmd:
+                    logging.info(f"[PC CONTROL] Running SSH Command: {cmd}")
+                    subprocess.run(cmd, shell=True, capture_output=True, timeout=5)
+                else:
+                    if ip in ["127.0.0.1", "localhost", get_local_ip()]:
+                        if platform.system() == "Windows":
+                            subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
+                    else:
+                        logging.warning(f"[PC CONTROL] No custom SSH lock command mapped for IP: {ip}")
             elif action in ["UNLOCK", "WAKE", "START", "PLAY"]:
-                cmd = f'ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 {ssh_user}@{ip} "powershell -command (New-Object -ComObject WScript.Shell).SendKeys(\'{{ESC}}\')"'
-            else:
-                return
+                pass
 
-            subprocess.run(cmd, shell=True, capture_output=True, timeout=3)
         except Exception as e:
             logging.error(f"[PC CONTROL ERROR] Failed to send {action} to PC at {ip}: {e}")
 
@@ -139,6 +146,39 @@ def load_station_capacities():
         except Exception as e:
             logging.error(f"[CONFIG ERROR] Could not read config.json: {e}")
     return DEFAULT_CAPACITIES
+
+# --- Persistent Settings & Cafe Timing Helpers ---
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"[SETTINGS ERROR] Could not read settings.json: {e}")
+    if os.path.exists(TIMINGS_FILE):
+        try:
+            with open(TIMINGS_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            pass
+    return {"openTime": "11:00", "closeTime": "23:00"}
+
+def save_settings(data):
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+        with open(TIMINGS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        logging.error(f"[SETTINGS ERROR] Could not write settings.json: {e}")
+        return False
+
+def load_cafe_timing():
+    return load_settings()
+
+def save_cafe_timing(data):
+    save_settings(data)
 
 def get_adb_binary():
     if IS_CLOUD:
@@ -257,7 +297,7 @@ def save_bookings(bookings):
         with open(BOOKINGS_FILE, "w") as f:
             json.dump(bookings, f, indent=2)
     except Exception as e:
-        logging.error(f"Error writing bookings file (Cloud/Permission Warning): {e}")
+        logging.error(f"Error writing bookings file: {e}")
 
 @app.before_request
 def handle_preflight():
@@ -277,11 +317,11 @@ def add_cors_and_ngrok_headers(response):
     response.headers['ngrok-skip-browser-warning'] = 'true'
     return response
 
-@app.route('/health', methods=['GET'])
+@app.route('/health', methods=['GET'], strict_slashes=False)
 def health_check():
     return jsonify({"status": "healthy", "cloud": IS_CLOUD, "timestamp": time.time()}), 200
 
-@app.route('/api/pending-commands', methods=['GET', 'OPTIONS'])
+@app.route('/api/pending-commands', methods=['GET', 'OPTIONS'], strict_slashes=False)
 def get_pending_commands():
     commands_to_send = []
     while not PENDING_COMMANDS_QUEUE.empty():
@@ -289,18 +329,18 @@ def get_pending_commands():
 
     return jsonify({"status": "success", "commands": commands_to_send}), 200
 
-@app.route('/lock.jpg', methods=['GET'])
+@app.route('/lock.jpg', methods=['GET'], strict_slashes=False)
 def get_lock_image():
     if os.path.exists(LOCK_IMAGE_PATH):
         return send_file(LOCK_IMAGE_PATH, mimetype='image/jpeg')
     return "Image not found", 404
 
-@app.route('/api/pc-status', methods=['GET'])
+@app.route('/api/pc-status', methods=['GET'], strict_slashes=False)
 def get_pc_status():
     station_id = request.args.get('station_id', 'PC-1').upper()
     return jsonify({"status": PC_STATES.get(station_id, "LOCKED")})
 
-@app.route('/api/public-status', methods=['GET'])
+@app.route('/api/public-status', methods=['GET'], strict_slashes=False)
 def get_public_status():
     status_map = {}
     now = time.time()
@@ -316,6 +356,42 @@ def get_public_status():
 
     return jsonify({"status": "success", "busy_stations": status_map}), 200
 
+# --- Dedicated Settings & Cafe Timings Persistent Endpoints ---
+@app.route('/api/settings', methods=['GET', 'POST', 'OPTIONS'], strict_slashes=False)
+def handle_settings():
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        current = load_settings()
+        if "openTime" in data:
+            current["openTime"] = data["openTime"]
+        if "closeTime" in data:
+            current["closeTime"] = data["closeTime"]
+        if save_settings(current):
+            return jsonify({"status": "success", "settings": current}), 200
+        return jsonify({"status": "error", "message": "Failed to write settings"}), 500
+
+    settings = load_settings()
+    return jsonify(settings), 200
+
+@app.route('/api/cafe-timing', methods=['GET', 'POST', 'OPTIONS'], strict_slashes=False)
+def handle_cafe_timing():
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        open_time = data.get("openTime") or data.get("open_time") or "11:00"
+        close_time = data.get("closeTime") or data.get("close_time") or "23:00"
+        
+        timing_payload = {
+            "openTime": open_time,
+            "closeTime": close_time,
+            "timestamp": time.time()
+        }
+        save_cafe_timing(timing_payload)
+        logging.info(f"[CAFE TIMING SAVED] Open: {open_time} | Close: {close_time}")
+        return jsonify({"status": "success", "timing": timing_payload}), 200
+
+    timing = load_cafe_timing()
+    return jsonify(timing), 200
+
 def process_control_logic(ip, action, station_id, minutes=60):
     now = time.time()
     req_key = f"{station_id}_{action}"
@@ -325,14 +401,12 @@ def process_control_logic(ip, action, station_id, minutes=60):
     LAST_REQUEST_TIMES[req_key] = now
     logging.info(f"[EXECUTING] Station: {station_id} | Action: {action} | IP: {ip}")
 
-    # Track active sessions
     if action in ["START", "PLAY", "RESUME", "INIT"]:
         ACTIVE_SESSIONS[station_id] = {"start_time": now, "end_time": now + (minutes * 60)}
     elif action in ["LOCK", "EXPIRE", "SESSION_EXPIRE", "EXPIRE_LOCK", "STOP", "END"]:
         ACTIVE_SESSIONS.pop(station_id, None)
 
-    # --- SPECIFIC PC LOGIC ---
-    if "PC" in station_id:
+    if "PC" in station_id or "TRUCK" in station_id or ip in PC_SSH_CONFIGS:
         if action in ["START", "PLAY", "RESUME", "INIT", "UNLOCK"]:
             PC_STATES[station_id] = "UNLOCKED"
             execute_pc_command(ip, "UNLOCK")
@@ -342,7 +416,6 @@ def process_control_logic(ip, action, station_id, minutes=60):
             execute_pc_command(ip, "LOCK")
             return {"status": "success", "message": f"{station_id} LOCKED"}
 
-    # --- SPECIFIC TV / CONSOLE ADB LOGIC ---
     if ip and not IS_CLOUD:
         if action in ["START", "PLAY", "RESUME", "INIT"]:
             run_adb_async(ip, "shell input keyevent 224", fast=True)
@@ -360,9 +433,9 @@ def process_control_logic(ip, action, station_id, minutes=60):
 
     return {"status": "success", "message": f"{station_id} Processed"}
 
-@app.route('/api/control', methods=['POST', 'OPTIONS'])
+@app.route('/api/control', methods=['POST', 'OPTIONS'], strict_slashes=False)
 def handle_control():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     ip = data.get('ip', '')
     action = str(data.get('action', '')).upper().strip()
     station_id = str(data.get('station_id', 'Unknown')).upper()
@@ -399,10 +472,10 @@ def resolve_capacity_key(station_id, screen_val):
         return "PC"
     return s_id
 
-@app.route('/api/bookings', methods=['GET', 'POST', 'OPTIONS'])
+@app.route('/api/bookings', methods=['GET', 'POST', 'OPTIONS'], strict_slashes=False)
 def handle_bookings():
     if request.method == 'POST':
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         logging.info(f"[INCOMING BOOKING DATA]: {data}")
 
         if CLOUD_URL and not IS_CLOUD:
@@ -461,7 +534,7 @@ def handle_bookings():
                     current_occupied_count += 1
 
         if current_occupied_count >= max_cap:
-            logging.warning(f"[SLOT FULL REJECTION] {target_cap_key} is full for slot {slot_time} on {extracted_date} ({current_occupied_count}/{max_cap})")
+            logging.warning(f"[SLOT FULL REJECTION] {target_cap_key} is full for slot {slot_time} on {extracted_date}")
             return jsonify({
                 "status": "error", 
                 "message": f"All units for {target_cap_key} are already booked for slot ({slot_time})!"
@@ -498,7 +571,7 @@ def handle_bookings():
     bookings = load_bookings()
     return jsonify(bookings), 200
 
-@app.route('/api/bookings/<booking_id>', methods=['DELETE', 'OPTIONS'])
+@app.route('/api/bookings/<booking_id>', methods=['DELETE', 'OPTIONS'], strict_slashes=False)
 def delete_booking(booking_id):
     if CLOUD_URL and not IS_CLOUD:
         try:
@@ -512,9 +585,9 @@ def delete_booking(booking_id):
     save_bookings(filtered_bookings)
     return jsonify({"status": "success", "message": f"Booking {booking_id} deleted"}), 200
 
-@app.route('/api/bookings/action', methods=['POST', 'OPTIONS'])
+@app.route('/api/bookings/action', methods=['POST', 'OPTIONS'], strict_slashes=False)
 def action_booking():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     booking_id = data.get("id")
     action = data.get("action")
 
@@ -538,8 +611,8 @@ def action_booking():
 
     return jsonify({"status": "error", "message": "Booking not found"}), 404
 
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
+@app.route('/', defaults={'path': ''}, strict_slashes=False)
+@app.route('/<path:path>', strict_slashes=False)
 def serve_frontend(path):
     target_file = os.path.join(DIST_DIR, path)
     if path != "" and os.path.exists(target_file):

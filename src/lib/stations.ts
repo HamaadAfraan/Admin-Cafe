@@ -160,9 +160,7 @@ export type ControlPayload = {
 };
 
 export async function sendControl(bridgeUrl: string, payload: ControlPayload) {
-  // Agar bridgeUrl localhost:5000 hai aur server offline hai, toh fetch call skip kar do 
-  // taaki browser net::ERR_CONNECTION_REFUSED error log na kare.
-  if (!bridgeUrl || bridgeUrl.includes("localhost:5000")) {
+  if (!bridgeUrl) {
     console.info(`[Offline Mode] Bridge command skipped for ${payload.station_id}: ${payload.action}`);
     return {
       ok: true,

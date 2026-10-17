@@ -25,7 +25,7 @@ export const KIND_LABEL: Record<StationKind, string> = {
   pc: "Gaming PC",
 };
 
-export const DEFAULT_BRIDGE_URL = "http://localhost:5000";
+export const DEFAULT_BRIDGE_URL = "http://127.0.0.1:5000";
 
 
 export const RATE_PER_HOUR: Record<StationKind, number> = {

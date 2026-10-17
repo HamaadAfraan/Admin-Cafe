@@ -26,13 +26,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { supabase } from "@/lib/supabaseClient";
 
 export interface BookingRequest {
   id: string;
+  name?: string;
   customer_name?: string;
   customer?: string;
-  name?: string;
   phone?: string;
+  email?: string;
   station_id?: string;
   stationId?: string;
   platform?: string;
@@ -40,13 +42,14 @@ export interface BookingRequest {
   screen?: string | null;
   duration?: string;
   team?: string;
-  slot_time?: string;
+  selectedGame?: string;
   slot?: string;
+  slot_time?: string;
   time_slot?: string;
   timeSlot?: string;
-  price?: number;
-  amount?: number;
-  total_amount?: number;
+  price?: number | string;
+  amount?: number | string;
+  total_amount?: number | string;
   utr?: string | number;
   bookingDate?: string;
   bookingdate?: string;
@@ -68,16 +71,6 @@ export interface BookingRequest {
   status: "PENDING" | "APPROVED" | "REJECTED" | string;
 }
 
-const getApiBaseUrl = () => {
-  if (typeof window !== "undefined") {
-    const envUrl = (import.meta as any).env?.VITE_API_BASE_URL;
-    if (envUrl) return envUrl;
-    return `${window.location.protocol}//${window.location.hostname}:5000`;
-  }
-  return 'http://localhost:5000';
-};
-
-// Date Formatter: Formats a Date object to "22-Sept-2026"
 const formatDateToReadable = (d: Date): string => {
   const day = String(d.getDate()).padStart(2, '0');
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
@@ -103,19 +96,13 @@ const extractBookingDay = (bookingObj: any): string => {
     const trimmed = possibleVal.trim();
     const lower = trimmed.toLowerCase();
 
-    // If string is "today", convert to today's date
-    if (lower === "today") {
-      return formatDateToReadable(new Date());
-    }
-
-    // If string is "tomorrow", convert to tomorrow's date
+    if (lower === "today") return formatDateToReadable(new Date());
     if (lower === "tomorrow") {
       const tom = new Date();
       tom.setDate(tom.getDate() + 1);
       return formatDateToReadable(tom);
     }
 
-    // Try parsing as ISO/standard date string
     const parsed = new Date(trimmed);
     if (!isNaN(parsed.getTime()) && trimmed.length >= 8) {
       return formatDateToReadable(parsed);
@@ -183,10 +170,7 @@ const isBookingSlotExpired = (booking: BookingRequest): boolean => {
     const formattedDay = extractBookingDay(booking);
     const todayStr = formatDateToReadable(new Date());
 
-    // If booking is for a future date, it's not expired
-    if (formattedDay !== todayStr) {
-      return false; 
-    }
+    if (formattedDay !== todayStr) return false; 
 
     const parts = slotStr.split("-");
     const endTimeStr = (parts.length > 1 ? parts[1] : parts[0]).trim();
@@ -214,17 +198,16 @@ const isBookingSlotExpired = (booking: BookingRequest): boolean => {
 const isWalkInBooking = (b: BookingRequest): boolean => {
   if (!b) return false;
   const idStr = String(b.id || "").toUpperCase();
-  const custName = String(b.customer_name || b.customer || b.name || "").toLowerCase();
-  const bType = String(b.type || "").toUpperCase();
+  const custName = String(b.customer_name || b.name || b.customer || "").toLowerCase();
+  const utrStr = String(b.utr || "").toUpperCase();
 
   return (
-    idStr.startsWith("WLK") ||
     idStr.startsWith("WALKIN") ||
+    idStr.startsWith("WLK") ||
     custName.includes("walk-in") ||
     custName.includes("walkin") ||
     custName.includes("admin block") ||
-    custName.includes("reserved") ||
-    bType === "WALK_IN"
+    utrStr.includes("OFFLINE-ADMIN-BLOCK")
   );
 };
 
@@ -241,7 +224,6 @@ interface Props {
 export function BookingsModal({ 
   open, 
   onOpenChange, 
-  bookings: initialBookings = [], 
   onApprove, 
   onReject,
   onDeleteBooking,
@@ -253,99 +235,54 @@ export function BookingsModal({
   const [loading, setLoading] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState<BookingRequest | null>(null);
 
-  const fetchBackendBookings = async () => {
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/api/bookings?t=${Date.now()}`, {
-        headers: { 'ngrok-skip-browser-warning': 'true' }
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return Array.isArray(data) ? data : (data.bookings || []);
-    } catch (e) {
-      return null;
-    }
-  };
-
   const syncBookingsData = async () => {
     setLoading(true);
-    const apiData = await fetchBackendBookings();
-
-    if (apiData && Array.isArray(apiData) && apiData.length > 0) {
-      const normalizedApiData = apiData.map((b) => {
-        if (isWalkInBooking(b)) {
-          return { ...b, status: "APPROVED" };
-        }
-        return b;
-      });
-      setLocalBookings(normalizedApiData);
-      try {
-        localStorage.setItem('strangers_bookings', JSON.stringify(normalizedApiData));
-      } catch (e) {}
-      setLoading(false);
-      return;
-    }
-
-    // Offline / Backend Fallback via LocalStorage
     try {
-      const saved = localStorage.getItem('strangers_bookings');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setLocalBookings(parsed);
-          setLoading(false);
-          return;
-        }
-      }
-    } catch (e) {}
+      const { data, error } = await supabase
+        .from("bookings")
+        .select("*")
+        .order("created_at", { ascending: false });
 
-    // Fallback to props
-    const sourceData = (initialBookings || []).map((b) => {
-      if (isWalkInBooking(b)) {
-        return { ...b, status: "APPROVED" };
+      if (error) {
+        console.error("Error fetching bookings from Supabase:", error);
+      } else if (data) {
+        const normalizedData = data.map((b) => {
+          if (isWalkInBooking(b)) {
+            return { ...b, status: "APPROVED" };
+          }
+          return b;
+        });
+        setLocalBookings(normalizedData);
       }
-      return b;
-    });
-    setLocalBookings(sourceData);
-    setLoading(false);
+    } catch (e) {
+      console.error("Failed fetching Supabase bookings:", e);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     if (open) {
       syncBookingsData();
-      const interval = setInterval(() => {
-        syncBookingsData();
-      }, 3000);
 
-      return () => clearInterval(interval);
+      const channel = supabase
+        .channel("bookings_modal_realtime_sync")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "bookings" },
+          () => {
+            syncBookingsData();
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
     }
   }, [open]);
 
-  const saveAndSetBookings = (updatedList: BookingRequest[]) => {
-    setLocalBookings(updatedList);
-    try {
-      localStorage.setItem('strangers_bookings', JSON.stringify(updatedList));
-      localStorage.setItem('stranger_cafe_bookings', JSON.stringify(updatedList));
-    } catch (e) {
-      console.error("Storage error:", e);
-    }
-  };
-
-  const triggerBackendAction = async (id: string, action: "APPROVE" | "REJECT", stationId?: string) => {
-    try {
-      await fetch(`${getApiBaseUrl()}/api/bookings/action`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'ngrok-skip-browser-warning': 'true'
-        },
-        body: JSON.stringify({ id, action, station_id: stationId, stationId })
-      });
-    } catch (e) {
-      console.error("Failed sync:", e);
-    }
-  };
-
-  const handleApprove = (b: BookingRequest) => {
+  const handleApprove = async (b: BookingRequest) => {
     let assignedStationId = b.station_id || b.stationId;
     const platformKind = (b.platform || b.category || "").toUpperCase();
 
@@ -365,30 +302,43 @@ export function BookingsModal({
     };
 
     onApprove(updatedBooking);
-    triggerBackendAction(b.id, "APPROVE", assignedStationId);
 
-    const updated = localBookings.map(item => item.id === b.id ? updatedBooking : item);
-    saveAndSetBookings(updated);
+    try {
+      await supabase
+        .from("bookings")
+        .update({ status: "APPROVED", station_id: assignedStationId })
+        .eq("id", b.id);
+    } catch (e) {
+      console.error("Failed to approve in Supabase:", e);
+    }
+
+    syncBookingsData();
 
     if (selectedBooking?.id === b.id) {
       setSelectedBooking(updatedBooking);
     }
   };
 
-  const handleReject = (id: string) => {
+  const handleReject = async (id: string) => {
     onReject(id);
-    triggerBackendAction(id, "REJECT");
-    const updated = localBookings.map(item => item.id === id ? { ...item, status: 'REJECTED' as const } : item);
-    saveAndSetBookings(updated);
+
+    try {
+      await supabase
+        .from("bookings")
+        .update({ status: "REJECTED" })
+        .eq("id", id);
+    } catch (e) {
+      console.error("Failed to reject in Supabase:", e);
+    }
+
+    syncBookingsData();
+
     if (selectedBooking?.id === id) {
       setSelectedBooking(prev => prev ? { ...prev, status: 'REJECTED' } : null);
     }
   };
 
   const handleDelete = async (id: string) => {
-    const updated = localBookings.filter(b => b.id !== id);
-    saveAndSetBookings(updated);
-
     if (selectedBooking?.id === id) {
       setSelectedBooking(null);
     }
@@ -398,49 +348,48 @@ export function BookingsModal({
     }
 
     try {
-      await fetch(`${getApiBaseUrl()}/api/bookings/${id}`, { 
-        method: 'DELETE',
-        headers: { 'ngrok-skip-browser-warning': 'true' }
-      });
+      const { error } = await supabase
+        .from("bookings")
+        .delete()
+        .eq("id", id);
+
+      if (error) {
+        console.error("Failed to delete booking from Supabase:", error);
+      }
     } catch (e) {
-      // Ignored
+      console.error("Error deleting from Supabase:", e);
     }
+
+    syncBookingsData();
   };
 
   const handleClearCompleted = async () => {
-    const toKeep: BookingRequest[] = [];
-    const toDelete: BookingRequest[] = [];
+    const idsToDelete: string[] = [];
 
     localBookings.forEach((b) => {
       const st = String(b.status).toUpperCase();
-      if (st === "PENDING" && !isWalkInBooking(b)) {
-        toKeep.push(b);
-      } else if (st === "REJECTED") {
-        toDelete.push(b);
+      if (st === "REJECTED") {
+        idsToDelete.push(b.id);
       } else if (st === "APPROVED" || isWalkInBooking(b)) {
         if (isBookingSlotExpired(b)) {
-          toDelete.push(b);
-        } else {
-          toKeep.push(b);
+          idsToDelete.push(b.id);
         }
-      } else {
-        toKeep.push(b);
       }
     });
 
-    saveAndSetBookings(toKeep);
-    if (onClearOldRecords) onClearOldRecords();
-
-    for (const record of toDelete) {
+    if (idsToDelete.length > 0) {
       try {
-        await fetch(`${getApiBaseUrl()}/api/bookings/${record.id}`, { 
-          method: 'DELETE',
-          headers: { 'ngrok-skip-browser-warning': 'true' }
-        });
+        await supabase
+          .from("bookings")
+          .delete()
+          .in("id", idsToDelete);
       } catch (e) {
-        // Ignored
+        console.error("Failed bulk deletion in Supabase:", e);
       }
     }
+
+    if (onClearOldRecords) onClearOldRecords();
+    syncBookingsData();
   };
 
   const safeBookings = Array.isArray(localBookings) ? localBookings : [];
@@ -466,7 +415,7 @@ export function BookingsModal({
       matchesFilter = effectiveStatus === filter;
     }
 
-    const name = b.customer_name || b.customer || b.name || "";
+    const name = b.customer_name || b.name || b.customer || "";
     const station = b.station_id || b.platform || b.category || "";
     const searchLower = search.toLowerCase();
     const utrStr = String(b.utr || "").toLowerCase();
@@ -483,8 +432,8 @@ export function BookingsModal({
   });
 
   const sortedBookings = [...filteredBookings].sort((a, b) => {
-    const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-    const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    const timeA = a.created_at || a.createdAt ? new Date(a.created_at || a.createdAt!).getTime() : 0;
+    const timeB = b.created_at || b.createdAt ? new Date(b.created_at || b.createdAt!).getTime() : 0;
     if (timeA && timeB) return timeB - timeA;
     return String(b.id || "").localeCompare(String(a.id || ""));
   });
@@ -502,9 +451,9 @@ export function BookingsModal({
             <div className="flex items-center justify-between">
               <DialogTitle className="flex items-center gap-2 font-display text-xl font-black text-amber-400">
                 <CalendarClock className="size-6 text-purple-400" />
-                Online Bookings Manager
+                Online & Walk-In Bookings Manager
                 {pendingCount > 0 && (
-                  <Badge className="bg-purple-600 text-white font-bold ml-2">
+                  <Badge className="bg-purple-600 text-white font-bold ml-2 animate-pulse">
                     {pendingCount} Pending
                   </Badge>
                 )}
@@ -536,7 +485,7 @@ export function BookingsModal({
             <div className="relative flex-1">
               <Search className="absolute left-3 top-2.5 size-4 text-slate-400" />
               <Input
-                placeholder="Search by name, phone, UTR, date (e.g. 22-Sept-2026)..."
+                placeholder="Search by name, phone, UTR, date (e.g. 2026-10-09)..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-9 bg-slate-900 border-slate-700 text-xs text-white placeholder:text-slate-500"
@@ -574,7 +523,7 @@ export function BookingsModal({
                 const displaySlot = b.slot_time || b.slot || b.time_slot || b.timeSlot || "Immediate";
                 const station = b.station_id || b.stationId || b.platform || b.category || "";
                 const displayStation = b.screen ? `${station} (${b.screen})` : station;
-                const customerName = b.customer_name || b.customer || b.name || (isWalkIn ? "Walk-In Customer" : "Customer");
+                const customerName = b.customer_name || b.name || b.customer || (isWalkIn ? "Walk-In Customer" : "Customer");
                 const bookingDay = extractBookingDay(b);
                 const isExpired = statusStr === "APPROVED" && isBookingSlotExpired(b);
                 const displayAmount = b.price || b.amount || b.total_amount || 0;
@@ -596,9 +545,21 @@ export function BookingsModal({
                             {customerName}
                           </span>
 
+                          {statusStr === "PENDING" && !isWalkIn && (
+                            <span className="bg-red-500/20 text-red-400 border border-red-500/30 text-[10px] px-2 py-0.5 rounded-full font-bold animate-pulse">
+                              🔥 NEW
+                            </span>
+                          )}
+
                           <span className="text-[11px] font-mono font-bold text-cyan-400 bg-cyan-950/60 px-1.5 py-0.2 rounded border border-cyan-800/50">
                             ID: {b.id}
                           </span>
+
+                          {isWalkIn && (
+                            <Badge className="bg-amber-600 text-white text-[8px] font-bold px-1.5 py-0.2">
+                              WALK-IN
+                            </Badge>
+                          )}
 
                           <Badge
                             className={`text-[9px] font-black uppercase px-1.5 py-0.5 ${
@@ -629,7 +590,7 @@ export function BookingsModal({
                             <Clock className="size-3.5 text-cyan-400" />
                             {displaySlot}
                           </span>
-                          {displayAmount > 0 && (
+                          {Number(displayAmount) > 0 && (
                             <>
                               <span>•</span>
                               <span className="flex items-center text-emerald-400 font-bold">
@@ -735,7 +696,7 @@ export function BookingsModal({
                   <User className="size-3.5 text-sky-400" /> Customer Name:
                 </span>
                 <span className="font-bold text-white">
-                  {selectedBooking.customer_name || selectedBooking.customer || selectedBooking.name || (isWalkInBooking(selectedBooking) ? "Walk-In Customer" : "N/A")}
+                  {selectedBooking.customer_name || selectedBooking.name || selectedBooking.customer || (isWalkInBooking(selectedBooking) ? "Walk-In Customer" : "N/A")}
                 </span>
               </div>
 

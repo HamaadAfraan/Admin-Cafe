@@ -26,6 +26,7 @@ import {
   Globe
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/lib/supabaseClient";
 
 type ReservationSlot = {
   id: string;
@@ -42,6 +43,7 @@ type ReservationSlot = {
 type Props = {
   stations?: any[];
   sessions?: Record<string, any>;
+  cafeHours?: { openTime: string; closeTime: string };
 };
 
 const CATEGORIES = [
@@ -52,20 +54,10 @@ const CATEGORIES = [
   { id: "pc", label: "Gaming PCs" },
 ];
 
-const CAFE_START_HOUR = 11; // 11 AM
-const CAFE_END_HOUR = 22;   // 10 PM
-const TOTAL_CAFE_MINUTES = (CAFE_END_HOUR - CAFE_START_HOUR) * 60;
-
-const getApiBaseUrl = () => {
-  if (typeof window !== "undefined") {
-    const envUrl = (import.meta as any).env?.VITE_API_BASE_URL;
-    if (envUrl) return envUrl;
-    return `${window.location.protocol}//${window.location.hostname}:5000`;
-  }
-  return 'http://localhost:5000';
+const formatDateToISO = (d: Date = new Date()): string => {
+  return d.toISOString().split("T")[0]; // "2026-10-09"
 };
 
-// Date Formatter: Formats a Date object to "22-Sept-2026"
 const formatDateToReadable = (d: Date = new Date()): string => {
   const day = String(d.getDate()).padStart(2, '0');
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
@@ -81,62 +73,6 @@ function getCurrentSystemTime() {
     minute: now.getMinutes()
   };
 }
-
-function getValidHoursOptions() {
-  const { hour, minute } = getCurrentSystemTime();
-  const validHours = [];
-
-  for (let h = CAFE_START_HOUR; h <= CAFE_END_HOUR; h++) {
-    if (h < hour) continue;
-    if (h === hour && minute >= 59) continue;
-
-    let displayHour = h > 12 ? h - 12 : h;
-    if (displayHour === 0) displayHour = 12;
-    const ampm = h >= 12 ? "PM" : "AM";
-    validHours.push({
-      value: h.toString().padStart(2, "0"),
-      label: `${displayHour} ${ampm}`
-    });
-  }
-
-  return validHours;
-}
-
-function getValidMinutesOptions(selectedHourStr: string) {
-  const { hour, minute } = getCurrentSystemTime();
-  const selectedHour = parseInt(selectedHourStr, 10);
-
-  const minutes = [];
-  for (let m = 0; m < 60; m += 1) {
-    if (selectedHour < hour) continue;
-    if (selectedHour === hour && m <= minute) continue;
-
-    const val = m.toString().padStart(2, "0");
-    minutes.push({ value: val, label: val });
-  }
-
-  return minutes;
-}
-
-const SIM_DURATIONS = [
-  { mins: 10, label: "+10 Mins" },
-  { mins: 20, label: "+20 Mins" },
-  { mins: 30, label: "+30 Mins" },
-  { mins: 40, label: "+40 Mins" },
-  { mins: 50, label: "+50 Mins" },
-  { mins: 60, label: "+1 Hour" },
-  { mins: 90, label: "+1.5 Hours" },
-  { mins: 120, label: "+2 Hours" },
-];
-
-const CONSOLE_DURATIONS = [
-  { mins: 30, label: "+30 Mins" },
-  { mins: 60, label: "+1 Hour" },
-  { mins: 90, label: "+1.5 Hours" },
-  { mins: 120, label: "+2 Hours" },
-  { mins: 150, label: "+2.5 Hours" },
-  { mins: 180, label: "+3 Hours" },
-];
 
 function parseTimeToMinutes(timeStr: string | number): number {
   if (typeof timeStr === "number") {
@@ -188,22 +124,6 @@ function formatTimeOnly(timestampMs?: number) {
   }
 }
 
-function getSlotTimelineStyles(startTimeVal: string | number, endTimeVal: string | number) {
-  const startMins = parseTimeToMinutes(startTimeVal);
-  const endMins = parseTimeToMinutes(endTimeVal);
-
-  const startOffset = Math.max(0, startMins - (CAFE_START_HOUR * 60));
-  const endOffset = Math.min(TOTAL_CAFE_MINUTES, (endMins <= startMins ? endMins + 24 * 60 : endMins) - (CAFE_START_HOUR * 60));
-
-  const left = (startOffset / TOTAL_CAFE_MINUTES) * 100;
-  const width = Math.max(1.5, ((endOffset - startOffset) / TOTAL_CAFE_MINUTES) * 100);
-
-  return {
-    left: `${Math.min(98, Math.max(0, left))}%`,
-    width: `${Math.min(100 - left, width)}%`
-  };
-}
-
 function format12HourDisplay(time24?: string) {
   if (!time24) return "--:--";
   try {
@@ -223,23 +143,6 @@ function format12HourDisplay(time24?: string) {
   } catch {
     return time24;
   }
-}
-
-function calculateEndTime(startHourStr: string, startMinStr: string, durationMins: number) {
-  const sH = parseInt(startHourStr, 10) || 11;
-  const sM = parseInt(startMinStr, 10) || 0;
-
-  const totalEndMins = sH * 60 + sM + (durationMins || 10);
-  const eH = Math.min(CAFE_END_HOUR, Math.floor(totalEndMins / 60));
-  const eM = totalEndMins % 60;
-
-  const eHStr = eH.toString().padStart(2, "0");
-  const eMStr = eM.toString().padStart(2, "0");
-
-  return {
-    raw: `${eHStr}:${eMStr}`,
-    display: format12HourDisplay(`${eHStr}:${eMStr}`)
-  };
 }
 
 function isStationSimulator(station: any): boolean {
@@ -275,16 +178,16 @@ function getStationDisplayName(station: any): string {
   const name = (station.name || "").toLowerCase();
 
   if (id.includes("ps5-01") || id.includes("ps5_01") || name.includes("ps5-01") || name.includes("ps5 01")) {
-    return "PS5-01 (55\" VIP)";
+    return 'PS5-01 (55" VIP)';
   }
   if (id.includes("ps5-02") || id.includes("ps5_02") || name.includes("ps5-02") || name.includes("ps5 02")) {
-    return "PS5-02 (55\" VIP)";
+    return 'PS5-02 (55" VIP)';
   }
   if (id.includes("ps5-03") || id.includes("ps5_03") || name.includes("ps5-03") || name.includes("ps5 03")) {
-    return "PS5-03 (43\" Reg)";
+    return 'PS5-03 (43" Reg)';
   }
   if (id.includes("ps5-04") || id.includes("ps5_04") || name.includes("ps5-04") || name.includes("ps5 04")) {
-    return "PS5-04 (43\" Reg)";
+    return 'PS5-04 (43" Reg)';
   }
 
   if (isStationPS4(station)) {
@@ -298,12 +201,16 @@ function getStationDisplayName(station: any): string {
   return station.name || station.id;
 }
 
-export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
+export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }: Props) {
   const [selectedCategory, setSelectedCategory] = useState("ALL");
   const [reservations, setReservations] = useState<Record<string, ReservationSlot[]>>({});
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<{ stationId: string; text: string } | null>(null);
   const [, setCurrentTimeTick] = useState(Date.now());
+
+  const CAFE_START_HOUR = cafeHours?.openTime ? parseInt(cafeHours.openTime.split(":")[0], 10) || 11 : 11;
+  const CAFE_END_HOUR = cafeHours?.closeTime ? parseInt(cafeHours.closeTime.split(":")[0], 10) || 22 : 22;
+  const TOTAL_CAFE_MINUTES = Math.max(60, (CAFE_END_HOUR - CAFE_START_HOUR) * 60);
 
   const [inputState, setInputState] = useState<Record<string, {
     customer: string;
@@ -317,45 +224,145 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
     return () => clearInterval(timer);
   }, []);
 
+  function getValidHoursOptions() {
+    const { hour, minute } = getCurrentSystemTime();
+    const validHours = [];
+
+    for (let h = CAFE_START_HOUR; h <= CAFE_END_HOUR; h++) {
+      if (h < hour) continue;
+      if (h === hour && minute >= 59) continue;
+
+      let displayHour = h > 12 ? h - 12 : h;
+      if (displayHour === 0) displayHour = 12;
+      const ampm = h >= 12 ? "PM" : "AM";
+      validHours.push({
+        value: h.toString().padStart(2, "0"),
+        label: `${displayHour} ${ampm}`
+      });
+    }
+
+    return validHours;
+  }
+
+  function getValidMinutesOptions(selectedHourStr: string) {
+    const { hour, minute } = getCurrentSystemTime();
+    const selectedHour = parseInt(selectedHourStr, 10);
+
+    const minutes = [];
+    for (let m = 0; m < 60; m += 1) {
+      if (selectedHour < hour) continue;
+      if (selectedHour === hour && m <= minute) continue;
+
+      const val = m.toString().padStart(2, "0");
+      minutes.push({ value: val, label: val });
+    }
+
+    return minutes;
+  }
+
+  const SIM_DURATIONS = [
+    { mins: 10, label: "+10 Mins" },
+    { mins: 20, label: "+20 Mins" },
+    { mins: 30, label: "+30 Mins" },
+    { mins: 40, label: "+40 Mins" },
+    { mins: 50, label: "+50 Mins" },
+    { mins: 60, label: "+1 Hour" },
+    { mins: 90, label: "+1.5 Hours" },
+    { mins: 120, label: "+2 Hours" },
+  ];
+
+  const CONSOLE_DURATIONS = [
+    { mins: 30, label: "+30 Mins" },
+    { mins: 60, label: "+1 Hour" },
+    { mins: 90, label: "+1.5 Hours" },
+    { mins: 120, label: "+2 Hours" },
+    { mins: 150, label: "+2.5 Hours" },
+    { mins: 180, label: "+3 Hours" },
+  ];
+
+  function getSlotTimelineStyles(startTimeVal: string | number, endTimeVal: string | number) {
+    const startMins = parseTimeToMinutes(startTimeVal);
+    const endMins = parseTimeToMinutes(endTimeVal);
+
+    const startOffset = Math.max(0, startMins - (CAFE_START_HOUR * 60));
+    const endOffset = Math.min(TOTAL_CAFE_MINUTES, (endMins <= startMins ? endMins + 24 * 60 : endMins) - (CAFE_START_HOUR * 60));
+
+    const left = (startOffset / TOTAL_CAFE_MINUTES) * 100;
+    const width = Math.max(1.5, ((endOffset - startOffset) / TOTAL_CAFE_MINUTES) * 100);
+
+    return {
+      left: `${Math.min(98, Math.max(0, left))}%`,
+      width: `${Math.min(100 - left, width)}%`
+    };
+  }
+
+  function calculateEndTime(startHourStr: string, startMinStr: string, durationMins: number) {
+    const sH = parseInt(startHourStr, 10) || CAFE_START_HOUR;
+    const sM = parseInt(startMinStr, 10) || 0;
+
+    const totalEndMins = sH * 60 + sM + (durationMins || 10);
+    const eH = Math.min(CAFE_END_HOUR, Math.floor(totalEndMins / 60));
+    const eM = totalEndMins % 60;
+
+    const eHStr = eH.toString().padStart(2, "0");
+    const eMStr = eM.toString().padStart(2, "0");
+
+    return {
+      raw: `${eHStr}:${eMStr}`,
+      display: format12HourDisplay(`${eHStr}:${eMStr}`)
+    };
+  }
+
   const fetchBackendReservations = async () => {
     setLoading(true);
     try {
-      let records: any[] = [];
+      const { data, error } = await supabase
+        .from("bookings")
+        .select("*")
+        .order("created_at", { ascending: false });
 
-      const res = await fetch(`${getApiBaseUrl()}/api/bookings?t=${Date.now()}`, {
-        headers: { 'ngrok-skip-browser-warning': 'true' }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        records = Array.isArray(data) ? data : (data.bookings || []);
+      if (error) {
+        console.error("Failed to fetch slots from Supabase:", error);
+        return;
       }
 
-      if (records.length === 0 && typeof localStorage !== 'undefined') {
-        const localData = localStorage.getItem('strangers_bookings') || localStorage.getItem('stranger_cafe_bookings');
-        if (localData) {
-          try { records = JSON.parse(localData); } catch { }
-        }
-      }
-
+      const records = data || [];
       const grouped: Record<string, ReservationSlot[]> = {};
+
+      const today = new Date();
+      const todayISO = formatDateToISO(today); // "2026-10-09"
+      const todayReadable = formatDateToReadable(today).toLowerCase(); // "09-oct-2026"
 
       records.forEach((b: any) => {
         const statusStr = String(b.status || "APPROVED").toUpperCase();
         if (statusStr === "REJECTED" || statusStr === "CANCELLED") return;
 
+        // DATE FILTER
+        const rawDateStr = String(b.bookingDate || b.booking_date || b.date || "").trim();
+        const rawDateLower = rawDateStr.toLowerCase();
+
+        const isTodayBooking = 
+          rawDateStr === todayISO || 
+          rawDateLower === todayReadable || 
+          rawDateLower === "today" || 
+          !rawDateStr;
+
+        if (!isTodayBooking) return;
+
         let rawStId = String(b.station_id || b.stationId || b.platform || b.category || "").toLowerCase();
-        const platformKind = String(b.platform || b.kind || b.category || "").toLowerCase();
+        const categoryStr = String(b.category || "").toLowerCase();
+        const screenStr = String(b.screen || "").toLowerCase();
+
         const slotStr = b.slot_time || b.slotTime || b.slot || b.time_slot || b.timeSlot || "";
         const parts = slotStr.split(" - ");
         const startStr = parts[0] || "11:00 AM";
         const endStr = parts[1] || "12:00 PM";
 
-        // Extract Date or Fallback to formatted current date
-        const bDateStr = b.bookingDate || b.booking_date || b.date || formatDateToReadable();
-        const formattedDate = (bDateStr.toLowerCase() === "today") ? formatDateToReadable() : bDateStr;
+        const formattedDate = formatDateToReadable(today);
 
         let targetStationId = "";
 
+        // EXACT & CATEGORY/SCREEN MATCHING WITH CUSTOMER APP
         const exactMatch = stations.find(s => String(s.id).toLowerCase() === rawStId);
         if (exactMatch) {
           targetStationId = exactMatch.id;
@@ -365,31 +372,36 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
             const sKind = String(s.kind || "").toLowerCase();
             const sName = String(s.name || "").toLowerCase();
 
-            const bookingScreen = String(b.screen || "").toLowerCase();
-
-            if (rawStId.includes("ps5_vip") || rawStId.includes("ps5-vip") || platformKind.includes("ps5_vip")) {
-              return sId.includes("ps5-01") || sId.includes("ps5-02") || sName.includes("vip");
-            }
-            if (rawStId.includes("ps5_reg") || rawStId.includes("ps5-reg") || platformKind.includes("ps5_reg")) {
-              return sId.includes("ps5-03") || sId.includes("ps5-04") || sName.includes("reg");
-            }
-
-            if (bookingScreen.includes("truck") || rawStId.includes("truck")) {
-              return sId.includes("truck") || sName.includes("truck");
+            // 1. PS5 VIP vs Regular
+            if (categoryStr.includes("ps5") || rawStId.includes("ps5")) {
+              if (screenStr.includes("55") || screenStr.includes("vip")) {
+                return sId.includes("ps5-01") || sId.includes("ps5-02") || sName.includes("vip");
+              }
+              if (screenStr.includes("43") || screenStr.includes("standard") || screenStr.includes("reg")) {
+                return sId.includes("ps5-03") || sId.includes("ps5-04") || sName.includes("reg");
+              }
+              return sKind === "ps5" || sId.includes("ps5");
             }
 
-            if (bookingScreen.includes("car") || rawStId.includes("car") || platformKind === "simulator") {
+            // 2. Simulators (Car vs Truck)
+            if (categoryStr.includes("sim") || sKind === "sim") {
+              if (screenStr.includes("truck") || rawStId.includes("truck")) {
+                return sId.includes("truck") || sName.includes("truck");
+              }
               return (sId.includes("sim") || sKind.includes("sim")) && !sId.includes("truck") && !sName.includes("truck");
             }
 
-            if (rawStId.includes("pc") || platformKind.includes("pc")) {
-              return sKind === "pc" || sKind === "pc_gaming";
+            // 3. PC
+            if (categoryStr.includes("pc") || sKind === "pc") {
+              return sKind === "pc" || sKind === "pc_gaming" || sId.includes("pc");
             }
-            if (rawStId.includes("ps4") || platformKind.includes("ps4")) {
+
+            // 4. PS4
+            if (categoryStr.includes("ps4") || sKind === "ps4") {
               return sKind === "ps4" || sId.includes("ps4");
             }
 
-            return sId === rawStId || sKind === platformKind;
+            return sId === rawStId;
           });
 
           for (const candidate of candidateStations) {
@@ -404,7 +416,7 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
           }
 
           if (!targetStationId && candidateStations.length > 0) {
-            targetStationId = candidateStations[candidateStations.length - 1].id;
+            targetStationId = candidateStations[0].id;
           }
         }
 
@@ -430,7 +442,7 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
 
       setReservations(grouped);
     } catch (e) {
-      console.error("Failed to fetch slots from DB:", e);
+      console.error("Failed to fetch slots from Supabase:", e);
     } finally {
       setLoading(false);
     }
@@ -438,8 +450,21 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
 
   useEffect(() => {
     fetchBackendReservations();
-    const interval = setInterval(fetchBackendReservations, 3000);
-    return () => clearInterval(interval);
+
+    const channel = supabase
+      .channel("schedule_modal_realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "bookings" },
+        () => {
+          fetchBackendReservations();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [stations]);
 
   const filteredStations = (stations || []).filter(station => {
@@ -460,7 +485,7 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
 
   const getInitialValidTime = () => {
     const validHours = getValidHoursOptions();
-    if (validHours.length === 0) return { hour: "22", min: "00" };
+    if (validHours.length === 0) return { hour: CAFE_END_HOUR.toString().padStart(2, "0"), min: "00" };
 
     const firstHour = validHours[0].value;
     const validMins = getValidMinutesOptions(firstHour);
@@ -497,6 +522,7 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
     });
   };
 
+  // ADD WALKIN BLOCKING SLOT EXACTLY MATCHING CUSTOMER WEBSITE SCHEMA
   const handleAddReservation = async (stationId: string, stationKind: string) => {
     setErrorMessage(null);
     const station = stations.find(s => s.id === stationId);
@@ -528,7 +554,7 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
     if (selectedStartMins <= currentClockMins) {
       setErrorMessage({
         stationId,
-        text: `⚠️ Time Passed: ${startTimeFormatted} nikalke chuka hai. Agla time choose karein.`
+        text: `⚠️ Time Passed: ${startTimeFormatted} nikal chuka hai. Agla time choose karein.`
       });
       return;
     }
@@ -546,60 +572,56 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
       return;
     }
 
+    // Match Customer Website Naming Standards
     const targetCategory = isPs5 ? "PS5" : isPs4 ? "PS4" : isSim ? "Simulator" : "PC";
     const stIdLower = (station.id || "").toLowerCase();
-    const targetScreen = stIdLower.includes("ps5-01") || stIdLower.includes("ps5-02")
-      ? '55" VIP'
-      : stIdLower.includes("ps5-03") || stIdLower.includes("ps5-04")
-        ? '43" Standard'
-        : isSim ? (isTruck ? "Truck" : "Car") : "";
+    
+    let targetScreen = "";
+    if (isPs5) {
+      targetScreen = (stIdLower.includes("ps5-01") || stIdLower.includes("ps5-02")) ? '55" VIP' : '43" Standard';
+    } else if (isSim) {
+      targetScreen = isTruck ? "Truck" : "Car";
+    }
 
     const now = new Date();
-    const createdTimeString = now.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    });
+    const todayIsoDate = formatDateToISO(now); // "2026-10-09"
+    const nowIsoString = now.toISOString();     // "2026-10-09T18:31:00.000Z"
+    const walkinName = current.customer.trim() || "Walk-In Blocked";
 
-    const currentDateFormatted = formatDateToReadable(now);
-
+    // EXACT FIELD MATCH WITH ONLINE CUSTOMER APP SCHEMA
     const newBooking = {
       id: `WALKIN_${Date.now()}`,
-      name: current.customer.trim() || "Walk-In Blocked",
-      customer_name: current.customer.trim() || "Walk-In Blocked",
-      customerName: current.customer.trim() || "Walk-In Blocked",
+      name: walkinName,
+      customer_name: walkinName,
       phone: "0000000000",
+      email: "walkin@cafe.internal",
+      utr: "OFFLINE-ADMIN-BLOCK",
+      bookingDate: todayIsoDate,
       category: targetCategory,
       station_id: targetCategory,
-      stationId: targetCategory,
       screen: targetScreen,
       team: "1 Player",
-      platform: isSim ? "sim" : stationKind,
+      selectedGame: "",
+      duration: `${current.durationMins} mins`,
       slot: slotTimeFormatted,
       slot_time: slotTimeFormatted,
-      slotTime: slotTimeFormatted,
-      bookingDate: currentDateFormatted,
-      booking_date: currentDateFormatted,
-      date: currentDateFormatted,
-      duration: `${current.durationMins} mins`,
-      created_time: createdTimeString,
-      status: "APPROVED",
       price: 0,
-      utr: "OFFLINE-ADMIN-BLOCK"
+      amount: 0,
+      created_time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+      status: "APPROVED",
+      createdAt: nowIsoString,
+      created_at: nowIsoString
     };
 
     try {
-      await fetch(`${getApiBaseUrl()}/api/bookings`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'ngrok-skip-browser-warning': 'true'
-        },
-        body: JSON.stringify(newBooking)
-      });
-      fetchBackendReservations();
+      const { error } = await supabase.from("bookings").insert([newBooking]);
+      if (error) {
+        console.error("Error inserting slot into Supabase:", error);
+      } else {
+        fetchBackendReservations();
+      }
     } catch (e) {
-      console.error("Error saving slot to server:", e);
+      console.error("Error saving slot to Supabase:", e);
     }
 
     const resetTime = getInitialValidTime();
@@ -616,10 +638,8 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
 
   const handleRemoveReservation = async (slotId: string) => {
     try {
-      await fetch(`${getApiBaseUrl()}/api/bookings/${slotId}`, {
-        method: 'DELETE',
-        headers: { 'ngrok-skip-browser-warning': 'true' }
-      });
+      const { error } = await supabase.from("bookings").delete().eq("id", slotId);
+      if (error) console.error("Error deleting slot from Supabase:", error);
       fetchBackendReservations();
     } catch (e) {
       console.error("Error removing slot:", e);
@@ -629,9 +649,9 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button variant="outline" className="gap-2 border-purple-500/50 bg-purple-950/40 text-purple-200 hover:bg-purple-900/60 font-bold h-9 text-xs">
+        <Button variant="outline" className="justify-start gap-2 border-purple-500/50 bg-purple-950/40 text-purple-200 hover:bg-purple-900/60 font-bold h-11 text-xs">
           <Calendar className="size-4 text-purple-400" />
-          Slot Manager
+            <div className="ml-2">Walkin Booking</div>
         </Button>
       </DialogTrigger>
 
@@ -694,7 +714,7 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
             let currentSelectedHour = rawInput?.startHour || defaultTime.hour;
 
             if (!validHours.some(h => h.value === currentSelectedHour)) {
-              currentSelectedHour = validHours.length > 0 ? validHours[0].value : "22";
+              currentSelectedHour = validHours.length > 0 ? validHours[0].value : CAFE_END_HOUR.toString().padStart(2, "0");
             }
 
             const validMinutes = getValidMinutesOptions(currentSelectedHour);
@@ -769,17 +789,14 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
                   </div>
                 )}
 
-                {/* ACCURATE DYNAMIC TIMELINE BAR */}
+                {/* TIMELINE BAR */}
                 <div className="space-y-1 bg-black/40 p-2 rounded-lg border border-slate-800/80">
                   <div className="flex justify-between text-[9px] text-slate-400 font-mono tracking-wider">
-                    <span>11 AM</span>
-                    <span>2 PM</span>
-                    <span>6 PM</span>
-                    <span>10 PM</span>
+                    <span>{format12HourDisplay(cafeHours?.openTime || "11:00")}</span>
+                    <span>{format12HourDisplay(cafeHours?.closeTime || "22:00")}</span>
                   </div>
 
                   <div className="relative h-3.5 w-full bg-emerald-500/20 rounded-full overflow-hidden border border-emerald-500/30">
-                    {/* Live running session block */}
                     {isLiveBusy && activeSession?.startTime && activeSession?.totalMs && (() => {
                       const liveStyles = getSlotTimelineStyles(activeSession.startTime, activeSession.startTime + activeSession.totalMs);
                       return (
@@ -791,7 +808,6 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
                       );
                     })()}
 
-                    {/* Booked slots accurately positioned */}
                     {stationResList.map((res) => {
                       const slotStyles = getSlotTimelineStyles(res.startTime, res.endTime);
                       return (
@@ -811,7 +827,6 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
                   </div>
                 </div>
 
-                {/* CURRENT LIVE SESSION STATUS */}
                 {isLiveBusy && activeSession ? (
                   <div className="px-2.5 py-1.5 rounded bg-red-950/40 border border-red-800/60 text-xs flex items-center justify-between">
                     <span className="font-bold text-red-200 flex items-center gap-1.5">
@@ -827,7 +842,6 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
                   </div>
                 )}
 
-                {/* UPCOMING RESERVED LIST */}
                 {stationResList.length > 0 && (
                   <div className="space-y-1">
                     <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Booked Slots:</div>
@@ -873,7 +887,6 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
                   </div>
                 )}
 
-                {/* FORM INPUTS */}
                 <div className="pt-2 border-t border-slate-800/80 space-y-2">
                   {currentSelectedConflict && (
                     <div className="p-1.5 rounded bg-red-950/90 border border-red-500 text-[11px] text-red-200 font-bold flex items-center justify-between animate-fadeIn">
@@ -894,7 +907,6 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
                       className="h-8 text-xs bg-black/50 border-slate-800 focus:border-purple-500 flex-1 min-w-[120px]"
                     />
 
-                    {/* Hour Select */}
                     <select
                       value={currentInputs.startHour}
                       onChange={(e) => handleInputChange(station.id, "startHour", e.target.value)}
@@ -909,7 +921,6 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
 
                     <span className="text-slate-500 font-bold">:</span>
 
-                    {/* Minute Select */}
                     <select
                       value={currentInputs.startMin}
                       onChange={(e) => handleInputChange(station.id, "startMin", e.target.value)}
@@ -922,7 +933,6 @@ export function ConsoleScheduleModal({ stations = [], sessions = {} }: Props) {
                       ))}
                     </select>
 
-                    {/* Duration Select */}
                     <select
                       value={currentInputs.durationMins}
                       onChange={(e) => handleInputChange(station.id, "durationMins", Number(e.target.value))}

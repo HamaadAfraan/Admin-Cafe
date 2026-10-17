@@ -1,18 +1,72 @@
-import { useState } from "react";
-import { X, Search, FileText, Gamepad2, Monitor, Car, Crown, IndianRupee } from "lucide-react";
+import { useState, useEffect } from "react";
+import { X, Search, FileText, IndianRupee, RefreshCw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { supabase } from "@/lib/supabaseClient";
 import type { GlobalHistoryLog } from "./StationCard";
 
 type Props = {
   isOpen: boolean;
   onClose: () => void;
-  logs: GlobalHistoryLog[];
+  logs?: GlobalHistoryLog[];
 };
 
-export function CustomerRecordsModal({ isOpen, onClose, logs }: Props) {
+export function CustomerRecordsModal({ isOpen, onClose }: Props) {
+  const [logs, setLogs] = useState<GlobalHistoryLog[]>([]);
+  const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
+
+  const fetchStationLogs = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("cafe_record_station")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.error("Error fetching station logs:", error);
+        return;
+      }
+
+      const formattedLogs: GlobalHistoryLog[] = (data || []).map((item: any) => ({
+        id: item.id,
+        stationId: item.station_id,
+        kind: item.kind || "ps5",
+        customerName: item.customer_name,
+        customerPhone: item.customer_phone,
+        playedMins: item.played_mins,
+        players: item.players,
+        amount: item.amount,
+        date: item.date,
+        time: item.time,
+      }));
+
+      setLogs(formattedLogs);
+    } catch (e) {
+      console.error("Failed to fetch logs:", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchStationLogs();
+
+      const channel = supabase
+        .channel("cafe_record_station_realtime")
+        .on("postgres_changes", { event: "*", schema: "public", table: "cafe_record_station" }, () => {
+          fetchStationLogs();
+        })
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -49,12 +103,20 @@ export function CustomerRecordsModal({ isOpen, onClose, logs }: Props) {
                 Customer Session Records
               </h2>
               <p className="text-xs text-muted-foreground">
-                All recorded gaming sessions & bill history
+                All cloud recorded gaming sessions & bill history
               </p>
             </div>
           </div>
           
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={fetchStationLogs}
+              className="h-8 text-xs border-border/80"
+            >
+              <RefreshCw className={`size-3.5 mr-1 ${loading ? "animate-spin" : ""}`} /> Refresh
+            </Button>
             <div className="hidden sm:flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-400">
               <IndianRupee className="size-3.5" /> Total: ₹{totalEarnings}
             </div>
@@ -106,7 +168,7 @@ export function CustomerRecordsModal({ isOpen, onClose, logs }: Props) {
         <div className="flex-1 overflow-y-auto pr-1 space-y-2 max-h-[50vh]">
           {filteredLogs.length === 0 ? (
             <div className="py-12 text-center text-sm text-muted-foreground">
-              No matching records found.
+              {loading ? "Loading session records..." : "No matching records found in cloud."}
             </div>
           ) : (
             filteredLogs.map((log) => (

@@ -35,7 +35,6 @@ import type { BookingRequest } from "@/hooks/useStationManager";
 
 const ICONS = { ps5: Gamepad2, ps4: Gamepad2, pc: Monitor, sim: Car } as const;
 
-// Presets set to 10m, 15m, 30m, and 60m (1h)
 const PRESETS = [10, 15, 30, 60];
 
 function formatPlayedTime(ms: number): string {
@@ -115,7 +114,6 @@ export function StationCard({
 
   const lockTriggeredRef = useRef(false);
 
-  // Strict Check: Banner & Notifications ONLY for actual PENDING requests
   const isActualPending = !!pendingBooking && String(pendingBooking.status).toUpperCase() === "PENDING";
 
   const Icon = ICONS[station.kind] || Gamepad2;
@@ -130,7 +128,6 @@ export function StationCard({
 
   const theme = getCategorySpecificTheme(station.kind, station.id, isVip);
 
-  // Auto-fill customer info ONLY if actual pending booking exists
   useEffect(() => {
     if (isActualPending && pendingBooking && !session) {
       setCustomerName(pendingBooking.customer_name || pendingBooking.customer || "");
@@ -176,12 +173,10 @@ export function StationCard({
             </div>
             <div>
               <div className="flex items-center gap-1.5 flex-wrap">
-                {/* Station Name */}
                 <p className="font-display text-base font-black tracking-wide text-white drop-shadow">
                   {station.name || station.id}
                 </p>
 
-                {/* Chhota ID badge (SIM-03) agar name alag hai */}
                 {station.name && station.name !== station.id && (
                   <span className="rounded border border-slate-700 bg-black/60 px-1 py-0.2 text-[9px] font-mono text-slate-300">
                     {station.id}
@@ -233,7 +228,6 @@ export function StationCard({
           </span>
         </div>
 
-        {/* ONLINE BOOKING NOTIFICATION OVERLAY */}
         {!session && isActualPending && pendingBooking && (
           <div className="mt-3 p-2.5 rounded-lg border border-purple-500/50 bg-purple-950/40 backdrop-blur space-y-2">
             <div className="flex items-center justify-between text-xs text-purple-200 font-bold">
@@ -455,10 +449,8 @@ export function StationCard({
         )}
       </div>
 
-      {/* CONTROLS SECTION */}
       {onControl && station.ip && (
         <div className="mt-4 border-t border-slate-800/80 pt-3 w-full">
-          {/* PC HARDWARE & SSH LOCK CONTROLS */}
           {isPcStation ? (
             <div>
               <div className="flex items-center justify-between mb-2">
@@ -493,7 +485,6 @@ export function StationCard({
               </div>
             </div>
           ) : (
-            /* CONSOLE TV REMOTE CONTROLS */
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className={cn("text-[10px] font-black uppercase tracking-widest", theme.accentText)}>

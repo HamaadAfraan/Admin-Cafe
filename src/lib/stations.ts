@@ -25,7 +25,10 @@ export const KIND_LABEL: Record<StationKind, string> = {
   pc: "Gaming PC",
 };
 
-export const DEFAULT_BRIDGE_URL = "http://localhost:5000";
+export const DEFAULT_BRIDGE_URL = 
+  typeof window !== "undefined" && window.location.hostname.includes("vercel.app")
+    ? "" 
+    : "http://192.168.1.4:5000";
 
 export const RATE_PER_HOUR: Record<StationKind, number> = {
   sim: 250,
@@ -159,12 +162,31 @@ export type ControlPayload = {
 };
 
 export async function sendControl(bridgeUrl: string, payload: ControlPayload) {
+  // Agar bridgeUrl localhost:5000 hai aur server offline hai, toh fetch call skip kar do 
+  // taaki browser net::ERR_CONNECTION_REFUSED error log na kare.
+  if (!bridgeUrl || bridgeUrl.includes("localhost:5000")) {
+    console.info(`[Offline Mode] Bridge command skipped for ${payload.station_id}: ${payload.action}`);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true }),
+    } as unknown as Response;
+  }
+
   const url = `${bridgeUrl.replace(/\/$/, "")}/api/control`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error(`Bridge responded ${res.status}`);
-  return res;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`Bridge responded ${res.status}`);
+    return res;
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      json: async () => ({ success: false }),
+    } as unknown as Response;
+  }
 }

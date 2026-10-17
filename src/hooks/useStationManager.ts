@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { supabase } from "@/lib/supabaseClient";
 import {
   buildStations,
   calculateSessionCost,
@@ -11,7 +12,6 @@ import {
 } from "@/lib/stations";
 
 const LS_BRIDGE = "nexus.bridgeUrl";
-const LS_HISTORY = "nexus.session_history";
 const LS_WALKINS = "nexus.walkin_slots";
 const LS_BOOKINGS = "nexus.cached_bookings";
 
@@ -87,26 +87,46 @@ export function useStationManager() {
 
   const processedSessionsRef = useRef<Set<string>>(new Set());
 
-  const [history, setHistory] = useState<SessionRecord[]>(() => {
-    if (typeof window === "undefined") return [];
+  // 3. HISTORY STATE & SUPABASE SYNC
+  const [history, setHistory] = useState<SessionRecord[]>([]);
+
+  const fetchSessionHistory = useCallback(async () => {
     try {
-      const saved = localStorage.getItem(LS_HISTORY);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
+      const { data, error } = await supabase
+        .from("cafe_record_station")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.warn("Supabase fetch session history error:", error);
+        return;
+      }
+
+      if (data) {
+        const formatted: SessionRecord[] = data.map((item: any) => ({
+          id: String(item.id),
+          stationId: item.station_id,
+          kind: item.kind || "ps5",
+          customer: item.customer_name || "Walk-in",
+          minutes: item.played_mins || 0,
+          amount: Number(item.amount || 0),
+          date: item.date || "",
+          rawDate: item.date || "",
+          startTime: item.time || "",
+          endTime: "",
+          timestamp: new Date(item.created_at).getTime() || Date.now(),
+        }));
+        setHistory(formatted);
+      }
+    } catch (err) {
+      console.error("Failed to load session history from Supabase:", err);
     }
-  });
+  }, []);
 
   const stationsRef = useRef(stations);
   const bridgeRef = useRef(bridgeUrl);
   stationsRef.current = stations;
   bridgeRef.current = bridgeUrl;
-
-  const getCleanBridgeUrl = useCallback(() => {
-    let url = bridgeRef.current || "http://localhost:5000";
-    if (!url.startsWith("http")) url = `http://${url}`;
-    return url.replace(/\/+$/, "");
-  }, []);
 
   useEffect(() => {
     try {
@@ -134,18 +154,14 @@ export function useStationManager() {
     }
   }, [walkInSlots]);
 
+  // Initial fetch for history and bookings
   useEffect(() => {
-    try {
-      localStorage.setItem(LS_HISTORY, JSON.stringify(history));
-    } catch {
-      /* ignore */
-    }
-  }, [history]);
+    fetchSessionHistory();
+  }, [fetchSessionHistory]);
 
   const fire = useCallback(
     (stationId: string, action: string, minutes?: number) => {
       const station = stationsRef.current.find((s) => s.id === stationId);
-      // Note: We bypass return if station is PC because PC stations still receive bridge network commands (e.g., LOCK via ADB/IP)
       if (!station || !station.ip) return;
 
       sendControl(bridgeRef.current, {
@@ -154,7 +170,7 @@ export function useStationManager() {
         ip: station.ip,
         ...(minutes ? { minutes } : {}),
       }).catch((err) => {
-        console.error(`Bridge command error:`, err);
+        console.warn(`Bridge command bypassed (Local server offline):`, err);
       });
     },
     []
@@ -184,24 +200,23 @@ export function useStationManager() {
     [fire]
   );
 
-  // 3. SMART FETCH: MERGES SERVER DATA WITHOUT ERASING LOCAL STATE
+  // DIRECT SUPABASE FETCH FOR BOOKINGS
   const fetchBookings = useCallback(async () => {
-    if (!bridgeRef.current) return;
     try {
-      const baseUrl = getCleanBridgeUrl();
-      const res = await fetch(`${baseUrl}/api/bookings`);
-      if (res.ok) {
-        const data = await res.json();
-        let serverList: BookingRequest[] = [];
+      const { data, error } = await supabase
+        .from("bookings")
+        .select("*")
+        .order("created_at", { ascending: false });
 
-        if (Array.isArray(data)) {
-          serverList = data;
-        } else if (data && Array.isArray(data.bookings)) {
-          serverList = data.bookings;
-        }
+      if (error) {
+        console.warn("Supabase fetch bookings error:", error);
+        return;
+      }
 
-        const formattedServerList: BookingRequest[] = serverList.map((b: any) => ({
+      if (data) {
+        const formattedServerList: BookingRequest[] = data.map((b: any) => ({
           ...b,
+          id: String(b.id),
           customer_name: b.customer_name || b.name || "Customer",
           station_id: b.station_id || b.category || "General",
           slot_time: b.slot_time || b.slot || "Immediate",
@@ -236,14 +251,35 @@ export function useStationManager() {
         }
       }
     } catch (err) {
-      /* Silent catch: Local storage remains intact */
+      console.error("Failed to load bookings from Supabase:", err);
     }
-  }, [getCleanBridgeUrl]);
+  }, []);
 
+
+// REALTIME & AUTO-POLLING SYNC FOR BOOKINGS
   useEffect(() => {
     fetchBookings();
-    const interval = setInterval(fetchBookings, 3000);
-    return () => clearInterval(interval);
+
+    const channel = supabase
+      .channel("public:bookings_live")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "bookings" },
+        () => {
+          fetchBookings();
+        }
+      )
+      .subscribe();
+
+    // Fallback Polling: Har 4 second mein automatic sync karega taaki refresh ki zaroorat na pade
+    const pollingInterval = setInterval(() => {
+      fetchBookings();
+    }, 4000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(pollingInterval);
+    };
   }, [fetchBookings]);
 
   const approveBooking = useCallback(
@@ -253,20 +289,20 @@ export function useStationManager() {
       );
 
       try {
-        const baseUrl = getCleanBridgeUrl();
-        await fetch(`${baseUrl}/api/bookings/action`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: booking.id, action: "APPROVE" }),
-        });
+        const { error } = await supabase
+          .from("bookings")
+          .update({ status: "APPROVED" })
+          .eq("id", booking.id);
+
+        if (error) throw error;
         toast.success(`Booking approved for ${booking.customer_name}`);
       } catch (err) {
-        toast.error("Failed to sync approval with server");
+        toast.error("Failed to sync approval with Supabase");
       } finally {
         fetchBookings();
       }
     },
-    [fetchBookings, getCleanBridgeUrl]
+    [fetchBookings]
   );
 
   const addWalkInReservation = useCallback(
@@ -305,18 +341,14 @@ export function useStationManager() {
       setBookings((prev) => [...prev, newBookingObj]);
 
       try {
-        const baseUrl = getCleanBridgeUrl();
-        await fetch(`${baseUrl}/api/bookings`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(newBookingObj),
-        });
+        const { error } = await supabase.from("bookings").insert([newBookingObj]);
+        if (error) throw error;
         toast.success(`Walk-In reserved: ${stationId} (${startTime})`);
       } catch (err) {
-        toast.info("Saved locally (Server sync pending)");
+        toast.info("Saved locally (Supabase sync pending)");
       }
     },
-    [getCleanBridgeUrl]
+    []
   );
 
   const removeWalkInReservation = useCallback(
@@ -325,16 +357,13 @@ export function useStationManager() {
       setBookings((prev) => prev.filter((b) => b.id !== slotId));
 
       try {
-        const baseUrl = getCleanBridgeUrl();
-        await fetch(`${baseUrl}/api/bookings/${slotId}`, {
-          method: "DELETE",
-        });
+        await supabase.from("bookings").delete().eq("id", slotId);
         toast.info("Walk-In slot removed");
       } catch (err) {
         /* silent catch */
       }
     },
-    [getCleanBridgeUrl]
+    []
   );
 
   const rejectBooking = useCallback(
@@ -344,28 +373,33 @@ export function useStationManager() {
       );
 
       try {
-        const baseUrl = getCleanBridgeUrl();
-        await fetch(`${baseUrl}/api/bookings/action`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: bookingId, action: "REJECT" }),
-        });
+        const { error } = await supabase
+          .from("bookings")
+          .update({ status: "REJECTED" })
+          .eq("id", bookingId);
+
+        if (error) throw error;
         toast.info("Booking request rejected");
       } catch (err) {
-        toast.error("Failed to sync rejection with server");
+        toast.error("Failed to sync rejection with Supabase");
       } finally {
         fetchBookings();
       }
     },
-    [fetchBookings, getCleanBridgeUrl]
+    [fetchBookings]
   );
 
-  const deleteSessionHistory = useCallback((recordId: string) => {
+  const deleteSessionHistory = useCallback(async (recordId: string) => {
     setHistory((prev) => prev.filter((item) => item.id !== recordId));
-    toast.success("Record deleted");
+    try {
+      await supabase.from("cafe_record_station").delete().eq("id", recordId);
+      toast.success("Record deleted");
+    } catch (err) {
+      toast.error("Failed to delete record from Supabase");
+    }
   }, []);
 
-  const logSessionHistory = useCallback((session: Session) => {
+  const logSessionHistory = useCallback(async (session: Session) => {
     const startTimestamp = session.startedAt || session.startTime || Date.now();
     const sessionKey = `${session.stationId}-${startTimestamp}`;
     if (processedSessionsRef.current.has(sessionKey)) return;
@@ -376,8 +410,7 @@ export function useStationManager() {
 
     const playedMs = Math.max(0, session.totalMs - session.remainingMs);
     const playedMinutes = Math.max(1, Math.round(playedMs / 60_000));
-    
-    // Pass stationId & stationK gets Simulator pricing accurately
+
     const sessionCost = calculateSessionCost(
       stationKind,
       playedMinutes,
@@ -386,32 +419,59 @@ export function useStationManager() {
     );
 
     const now = new Date();
+    const dateStr = now.toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+    const timeStr = now.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+// Station ID map fix taaki database mein hamesha correct ID save ho
+    const rawStationId = session.stationId;
+    const correctedStationId = rawStationId === "Truck-03" || rawStationId === "Truck-Sim-1" ? "SIM-03" : rawStationId;
 
-    const record: SessionRecord = {
-      id: `${session.stationId}-${Date.now()}`,
-      stationId: session.stationId,
+    const recordPayload = {
+      station_id: correctedStationId, // <-- Yahan corrected ID pass hogi
       kind: stationKind,
-      customer: session.customer || "Walk-in",
-      minutes: playedMinutes,
+      customer_name: session.customer || "Walk-in",
+      customer_phone: "0000000000",
+      played_mins: playedMinutes,
+      players: session.playerCount || 1,
       amount: sessionCost,
-      rawDate: now.toISOString().split("T")[0],
-      date: now.toLocaleDateString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      }),
-      startTime: new Date(startTimestamp).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-      endTime: now.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-      timestamp: Date.now(),
+      date: dateStr,
+      time: timeStr,
     };
 
-    setHistory((prev) => [record, ...prev]);
+    try {
+      const { data, error } = await supabase
+        .from("cafe_record_station")
+        .insert([recordPayload])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      if (data) {
+        const newRecord: SessionRecord = {
+          id: String(data.id),
+          stationId: data.station_id,
+          kind: data.kind || "ps5",
+          customer: data.customer_name,
+          minutes: data.played_mins,
+          amount: Number(data.amount),
+          date: data.date,
+          rawDate: now.toISOString().split("T")[0],
+          startTime: data.time,
+          endTime: timeStr,
+          timestamp: Date.now(),
+        };
+        setHistory((prev) => [newRecord, ...prev]);
+      }
+    } catch (err) {
+      console.error("Failed to save session history to Supabase:", err);
+    }
   }, []);
 
   const lock = useCallback(
@@ -543,3 +603,4 @@ export function useStationManager() {
     deleteSessionHistory,
   };
 }
+

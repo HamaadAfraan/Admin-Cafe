@@ -418,7 +418,7 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
     }
   };
 
-  const handleApproveRecharge = async (recharge: any) => {
+const handleApproveRecharge = async (recharge: any) => {
     try {
       await supabase
         .from("diamond_recharges")
@@ -430,7 +430,6 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
       const cleanPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits;
       
       const userId = String(recharge.user_id || "").trim();
-      const amount = Number(recharge.amount || 0);
       const diamondsToAdd = Number(recharge.diamonds || 0);
 
       let existingProfile = null;
@@ -462,26 +461,16 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
         if (data) existingProfile = data;
       }
 
-      const currentPts = Number(existingProfile?.gamer_points || 0);
+      // Sirf diamonds badhenge, gamer points par koi asar nahi padega!
       const currentDiamonds = Number(existingProfile?.redeemable_diamonds || 0);
-
-      const updatedPts = currentPts + amount;
       const updatedDiamonds = currentDiamonds + diamondsToAdd;
-
-      let newTier = "BRONZE";
-      if (updatedPts >= 5000) newTier = "LEGEND";
-      else if (updatedPts >= 2500) newTier = "DIAMOND";
-      else if (updatedPts >= 1000) newTier = "GOLD";
-      else if (updatedPts >= 500) newTier = "SILVER";
 
       if (existingProfile && existingProfile.id) {
         await supabase
           .from("profiles")
           .update({
             name: recharge.customer_name || recharge.name || existingProfile.name || "Gamer",
-            gamer_points: updatedPts,
-            redeemable_diamonds: updatedDiamonds,
-            loyalty_tier: newTier,
+            redeemable_diamonds: updatedDiamonds, // Sirf diamonds update honge
             updated_at: new Date().toISOString()
           })
           .eq("id", existingProfile.id);
@@ -489,9 +478,7 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
         if (selectedUser) {
           setSelectedUser(prev => prev ? {
             ...prev,
-            redeemableDiamonds: updatedDiamonds,
-            gamerPoints: updatedPts,
-            loyaltyTier: newTier
+            redeemableDiamonds: updatedDiamonds
           } : null);
         }
       }

@@ -493,29 +493,20 @@ const handleApproveRecharge = async (recharge: any) => {
     }
   };
 
-  const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: number) => {
+const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: number) => {
     if (!selectedUser) return;
 
     try {
       const phone = String(selectedUser.phone || "").trim();
       const currentDiamonds = Number(selectedUser.redeemableDiamonds || 0);
-      const currentPts = Number(selectedUser.gamerPoints || 0);
 
+      // Sirf diamonds badhenge, gamer_points mein amount add nahi hoga
       const updatedDiamonds = currentDiamonds + diamondsToAdd;
-      const updatedPts = currentPts + amount;
-
-      let newTier = "BRONZE";
-      if (updatedPts >= 5000) newTier = "LEGEND";
-      else if (updatedPts >= 2500) newTier = "DIAMOND";
-      else if (updatedPts >= 1000) newTier = "GOLD";
-      else if (updatedPts >= 500) newTier = "SILVER";
 
       const { error: updateErr } = await supabase
         .from("profiles")
         .update({
           redeemable_diamonds: updatedDiamonds,
-          gamer_points: updatedPts,
-          loyalty_tier: newTier,
           updated_at: new Date().toISOString()
         })
         .eq("phone", phone);
@@ -525,8 +516,6 @@ const handleApproveRecharge = async (recharge: any) => {
           .from("profiles")
           .update({
             redeemable_diamonds: updatedDiamonds,
-            gamer_points: updatedPts,
-            loyalty_tier: newTier,
             updated_at: new Date().toISOString()
           })
           .eq("id", selectedUser.key);
@@ -545,9 +534,7 @@ const handleApproveRecharge = async (recharge: any) => {
 
       setSelectedUser(prev => prev ? {
         ...prev,
-        redeemableDiamonds: updatedDiamonds,
-        gamerPoints: updatedPts,
-        loyaltyTier: newTier
+        redeemableDiamonds: updatedDiamonds
       } : null);
 
       await fetchUsersAndData();
@@ -1277,3 +1264,4 @@ const handleApproveRecharge = async (recharge: any) => {
     </>
   );
 }
+

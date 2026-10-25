@@ -42,7 +42,22 @@ import {
   SelectTrigger, 
   SelectValue 
 } from "@/components/ui/select";
-import { supabase } from "@/lib/supabaseClient";
+import { db } from "@/lib/firebase";
+import { 
+  collection, 
+  getDocs, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  deleteDoc, 
+  addDoc, 
+  query,
+  where, 
+  limit,
+  orderBy, 
+  onSnapshot 
+} from "firebase/firestore";
 
 export interface UserProfile {
   key: string;
@@ -93,7 +108,9 @@ function parseTimeToMinutes(timeStr: string): number {
   if (!timeStr) return 0;
   const cleaned = timeStr.trim().toUpperCase();
   const match = cleaned.match(/(\d+):(\d+)\s*(AM|PM)?/);
-  if (!match) return 0;
+  
+  // Yahan check kar liya ki match[1] aur match[2] undefined nahi hain
+  if (!match || !match[1] || !match[2]) return 0;
 
   let hours = parseInt(match[1], 10);
   const minutes = parseInt(match[2], 10);
@@ -151,28 +168,42 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
   // Confirmation dialog state for granting diamonds to selected user
   const [confirmPack, setConfirmPack] = useState<{ amount: number; diamonds: number } | null>(null);
 
-  const fetchUsersAndData = async () => {
+const fetchUsersAndData = async () => {
     setLoading(true);
     try {
-      const { data: savedProfiles, error: pError } = await supabase
-        .from("profiles")
-        .select("*");
+      // 1. Fetch Profiles from Firebase
+      const profilesSnapshot = await getDocs(collection(db, "profiles"));
+      const savedProfiles = profilesSnapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
 
-      if (pError) console.error("Error fetching profiles:", pError);
+      // 2. Fetch Bookings from Firebase (ordered by created_at desc if available, or just fetch all)
+      const bookingsQuery = query(collection(db, "bookings"), orderBy("created_at", "desc"));
+      let bookingsSnapshot;
+      try {
+        bookingsSnapshot = await getDocs(bookingsQuery);
+      } catch (err) {
+        // Fallback agar 'created_at' index na ho toh bina orderBy ke fetch kar lo
+        bookingsSnapshot = await getDocs(collection(db, "bookings"));
+      }
+      const bookingsData = bookingsSnapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
 
-      const { data: bookingsData, error: bError } = await supabase
-        .from("bookings")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (bError) console.error("Error fetching bookings:", bError);
-
-      const { data: rechargesData, error: rError } = await supabase
-        .from("diamond_recharges")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (rError) console.error("Error fetching recharges:", rError);
+      // 3. Fetch Diamond Recharges from Firebase
+      const rechargesQuery = query(collection(db, "diamond_recharges"), orderBy("created_at", "desc"));
+      let rechargesSnapshot;
+      try {
+        rechargesSnapshot = await getDocs(rechargesQuery);
+      } catch (err) {
+        rechargesSnapshot = await getDocs(collection(db, "diamond_recharges"));
+      }
+      const rechargesData = rechargesSnapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
 
       setAllRecharges(rechargesData || []);
 
@@ -186,13 +217,13 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
         if (cleanId && userMap[cleanId]) return cleanId;
         if (cleanEmail && cleanEmail !== "") {
           const foundByEmail = Object.keys(userMap).find(
-            k => userMap[k].email.toLowerCase() === cleanEmail
+            (k) => userMap[k].email.toLowerCase() === cleanEmail
           );
           if (foundByEmail) return foundByEmail;
         }
         if (cleanPhone && cleanPhone.length >= 7 && cleanPhone !== "0000000000") {
           const foundByPhone = Object.keys(userMap).find(
-            k => userMap[k].phone === cleanPhone
+            (k) => userMap[k].phone === cleanPhone
           );
           if (foundByPhone) return foundByPhone;
         }
@@ -208,7 +239,7 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
         const gamerPoints = Number(p.gamer_points ?? p.diamond_points ?? p.points ?? 0);
         const redeemableDiamonds = Number(p.redeemable_diamonds ?? 0);
         const loyaltyTier = String(p.loyalty_tier || "BRONZE");
-        
+
         const userKey = resolveUserKey(id, phone, email);
 
         if (!userMap[userKey]) {
@@ -226,7 +257,7 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
             loyaltyTier: loyaltyTier,
             lastBookingDate: p.updated_at || "",
             bookings: [],
-            recharges: []
+            recharges: [],
           };
         } else {
           if (name && name !== "Customer") userMap[userKey].name = name;
@@ -263,7 +294,7 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
             loyaltyTier: "BRONZE",
             lastBookingDate: b.bookingDate || b.booking_date || b.created_at || "",
             bookings: [],
-            recharges: []
+            recharges: [],
           };
         }
 
@@ -308,7 +339,7 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
             loyaltyTier: "BRONZE",
             lastBookingDate: r.created_at || "",
             bookings: [],
-            recharges: []
+            recharges: [],
           };
         }
 
@@ -328,58 +359,67 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
       setUsers(userList);
 
       if (selectedUser) {
-        const updatedSelected = userList.find(u => u.key === selectedUser.key);
+        const updatedSelected = userList.find((u) => u.key === selectedUser.key);
         if (updatedSelected) setSelectedUser(updatedSelected);
       }
     } catch (e) {
-      console.error("Failed fetching user profiles:", e);
+      console.error("Failed fetching user profiles from Firebase:", e);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (open) {
-      setActiveTab(initialTab);
+useEffect(() => {
+    if (!open) return;
+
+    setActiveTab(initialTab);
+    fetchUsersAndData();
+
+    // Firebase Firestore real-time listeners for live synchronization
+    const unsubProfiles = onSnapshot(collection(db, "profiles"), () => {
       fetchUsersAndData();
+    });
 
-      const channel = supabase
-        .channel("profiles_realtime_sync_v25")
-        .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, () => {
-          fetchUsersAndData();
-        })
-        .on("postgres_changes", { event: "*", schema: "public", table: "bookings" }, () => {
-          fetchUsersAndData();
-        })
-        .on("postgres_changes", { event: "*", schema: "public", table: "diamond_recharges" }, () => {
-          fetchUsersAndData();
-        })
-        .subscribe();
+    const unsubBookings = onSnapshot(collection(db, "bookings"), () => {
+      fetchUsersAndData();
+    });
 
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    }
+    const unsubRecharges = onSnapshot(collection(db, "diamond_recharges"), () => {
+      fetchUsersAndData();
+    });
+
+    // Cleanup listeners when modal closes
+    return () => {
+      unsubProfiles();
+      unsubBookings();
+      unsubRecharges();
+    };
   }, [open, initialTab]);
 
-  const handleApproveBooking = async (booking: any) => {
+const handleApproveBooking = async (booking: any) => {
     try {
-      await supabase
-        .from("bookings")
-        .update({ status: "APPROVED" })
-        .eq("id", booking.id);
+      // 1. Update booking status in Firebase
+      await updateDoc(doc(db, "bookings", booking.id), { status: "APPROVED" });
 
       const phone = String(booking.phone || "").trim();
       const amount = Number(booking.price || booking.amount || 0);
 
       if (phone && phone.length >= 7 && phone !== "undefined" && phone !== "null") {
-        const { data: existingProfile } = await supabase
-          .from("profiles")
-          .select("*")
-          .eq("phone", phone)
-          .maybeSingle();
+        // Find profile by phone using Firestore query
+        const q = query(collection(db, "profiles"), where("phone", "==", phone), limit(1));
+        const querySnapshot = await getDocs(q);
 
-        const currentPts = existingProfile?.gamer_points || 0;
+        let existingProfileId = null;
+        let existingProfileData: any = null;
+
+        // Optional chaining (?.) use karne se undefined error nahi aayega
+        const docSnap = querySnapshot.docs?.[0];
+        if (docSnap) {
+          existingProfileId = docSnap.id;
+          existingProfileData = docSnap.data();
+        }
+
+        const currentPts = existingProfileData?.gamer_points || 0;
         const updatedPts = currentPts + Math.floor(amount);
 
         let newTier = "BRONZE";
@@ -388,24 +428,20 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
         else if (updatedPts >= 1000) newTier = "GOLD";
         else if (updatedPts >= 500) newTier = "SILVER";
 
-        if (existingProfile && existingProfile.id) {
-          await supabase
-            .from("profiles")
-            .update({
-              gamer_points: updatedPts,
-              loyalty_tier: newTier,
-              updated_at: new Date().toISOString()
-            })
-            .eq("id", existingProfile.id);
+        if (existingProfileId) {
+          await updateDoc(doc(db, "profiles", existingProfileId), {
+            gamer_points: updatedPts,
+            loyalty_tier: newTier,
+            updated_at: new Date().toISOString()
+          });
         } else {
-          await supabase
-            .from("profiles")
-            .insert({
-              phone: phone,
-              name: booking.customer_name || booking.name || "Customer",
-              gamer_points: updatedPts,
-              loyalty_tier: newTier
-            });
+          await addDoc(collection(db, "profiles"), {
+            phone: phone,
+            name: booking.customer_name || booking.name || "Customer",
+            gamer_points: updatedPts,
+            loyalty_tier: newTier,
+            created_at: new Date().toISOString()
+          });
         }
       }
 
@@ -418,62 +454,47 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
     }
   };
 
-const handleApproveRecharge = async (recharge: any) => {
+  const handleApproveRecharge = async (recharge: any) => {
     try {
-      await supabase
-        .from("diamond_recharges")
-        .update({ status: "APPROVED" })
-        .eq("id", recharge.id);
+      // 1. Update recharge status in Firebase
+      await updateDoc(doc(db, "diamond_recharges", recharge.id), { status: "APPROVED" });
 
       const rawPhone = String(recharge.phone || "").trim();
-      const phoneDigits = rawPhone.replace(/\D/g, "");
-      const cleanPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits;
-      
       const userId = String(recharge.user_id || "").trim();
       const diamondsToAdd = Number(recharge.diamonds || 0);
 
-      let existingProfile = null;
+      let existingProfileId = null;
+      let existingProfileData: any = null;
 
+      // Find profile by user_id if present
       if (userId) {
-        const { data } = await supabase
-          .from("profiles")
-          .select("*")
-          .eq("id", userId)
-          .maybeSingle();
-        if (data) existingProfile = data;
+        const userDocSnap = await getDoc(doc(db, "profiles", userId));
+        if (userDocSnap.exists()) {
+          existingProfileId = userDocSnap.id;
+          existingProfileData = userDocSnap.data();
+        }
       }
 
-      if (!existingProfile && rawPhone && rawPhone !== "0000000000") {
-        const { data } = await supabase
-          .from("profiles")
-          .select("*")
-          .eq("phone", rawPhone)
-          .maybeSingle();
-        if (data) existingProfile = data;
+      // If not found, find by phone
+      if (!existingProfileId && rawPhone && rawPhone !== "0000000000") {
+        const q = query(collection(db, "profiles"), where("phone", "==", rawPhone), limit(1));
+        const querySnapshot = await getDocs(q);
+        const docSnap = querySnapshot.docs?.[0];
+        if (docSnap) {
+          existingProfileId = docSnap.id;
+          existingProfileData = docSnap.data();
+        }
       }
 
-      if (!existingProfile && cleanPhone.length >= 10) {
-        const { data } = await supabase
-          .from("profiles")
-          .select("*")
-          .ilike("phone", `%${cleanPhone}%`)
-          .maybeSingle();
-        if (data) existingProfile = data;
-      }
-
-      // Sirf diamonds badhenge, gamer points par koi asar nahi padega!
-      const currentDiamonds = Number(existingProfile?.redeemable_diamonds || 0);
+      const currentDiamonds = Number(existingProfileData?.redeemable_diamonds || 0);
       const updatedDiamonds = currentDiamonds + diamondsToAdd;
 
-      if (existingProfile && existingProfile.id) {
-        await supabase
-          .from("profiles")
-          .update({
-            name: recharge.customer_name || recharge.name || existingProfile.name || "Gamer",
-            redeemable_diamonds: updatedDiamonds, // Sirf diamonds update honge
-            updated_at: new Date().toISOString()
-          })
-          .eq("id", existingProfile.id);
+      if (existingProfileId) {
+        await updateDoc(doc(db, "profiles", existingProfileId), {
+          name: recharge.customer_name || recharge.name || existingProfileData.name || "Gamer",
+          redeemable_diamonds: updatedDiamonds,
+          updated_at: new Date().toISOString()
+        });
 
         if (selectedUser) {
           setSelectedUser(prev => prev ? {
@@ -493,6 +514,7 @@ const handleApproveRecharge = async (recharge: any) => {
     }
   };
 
+
 const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: number) => {
     if (!selectedUser) return;
 
@@ -503,34 +525,46 @@ const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: nu
       // Sirf diamonds badhenge, gamer_points mein amount add nahi hoga
       const updatedDiamonds = currentDiamonds + diamondsToAdd;
 
-      const { error: updateErr } = await supabase
-        .from("profiles")
-        .update({
-          redeemable_diamonds: updatedDiamonds,
-          updated_at: new Date().toISOString()
-        })
-        .eq("phone", phone);
+      let profileUpdated = false;
 
-      if (updateErr) {
-        await supabase
-          .from("profiles")
-          .update({
+      // 1. Try updating profile by phone query first
+      if (phone && phone.length >= 7) {
+        const q = query(collection(db, "profiles"), where("phone", "==", phone), limit(1));
+        const querySnapshot = await getDocs(q);
+        const docSnap = querySnapshot.docs?.[0];
+
+        if (docSnap) {
+          await updateDoc(doc(db, "profiles", docSnap.id), {
             redeemable_diamonds: updatedDiamonds,
             updated_at: new Date().toISOString()
-          })
-          .eq("id", selectedUser.key);
+          });
+          profileUpdated = true;
+        }
       }
 
-      await supabase
-        .from("diamond_recharges")
-        .insert({
-          phone: phone,
-          customer_name: selectedUser.name,
-          diamonds: diamondsToAdd,
-          amount: amount,
-          utr: "ADMIN_DIRECT_GRANT",
-          status: "APPROVED"
-        });
+      // 2. If not updated by phone, try updating by selectedUser.key (which can be id)
+      if (!profileUpdated && selectedUser.key) {
+        try {
+          await updateDoc(doc(db, "profiles", selectedUser.key), {
+            redeemable_diamonds: updatedDiamonds,
+            updated_at: new Date().toISOString()
+          });
+          profileUpdated = true;
+        } catch (err) {
+          console.error("Could not update by profile key directly:", err);
+        }
+      }
+
+      // 3. Add record to diamond_recharges collection in Firebase
+      await addDoc(collection(db, "diamond_recharges"), {
+        phone: phone,
+        customer_name: selectedUser.name,
+        diamonds: diamondsToAdd,
+        amount: amount,
+        utr: "ADMIN_DIRECT_GRANT",
+        status: "APPROVED",
+        created_at: new Date().toISOString()
+      });
 
       setSelectedUser(prev => prev ? {
         ...prev,
@@ -548,7 +582,7 @@ const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: nu
 
   const handleRejectBooking = async (bookingId: string) => {
     try {
-      await supabase.from("bookings").update({ status: "REJECTED" }).eq("id", bookingId);
+      await updateDoc(doc(db, "bookings", bookingId), { status: "REJECTED" });
       fetchUsersAndData();
       if (selectedBooking && selectedBooking.id === bookingId) {
         setSelectedBooking((prev: any) => ({ ...prev, status: "REJECTED" }));
@@ -558,9 +592,10 @@ const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: nu
     }
   };
 
-  const handleRejectRecharge = async (rechargeId: string) => {
+
+const handleRejectRecharge = async (rechargeId: string) => {
     try {
-      await supabase.from("diamond_recharges").update({ status: "REJECTED" }).eq("id", rechargeId);
+      await updateDoc(doc(db, "diamond_recharges", rechargeId), { status: "REJECTED" });
       fetchUsersAndData();
       if (selectedRecharge && selectedRecharge.id === rechargeId) {
         setSelectedRecharge((prev: any) => ({ ...prev, status: "REJECTED" }));
@@ -572,7 +607,7 @@ const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: nu
 
   const handleDeleteBooking = async (bookingId: string) => {
     try {
-      await supabase.from("bookings").delete().eq("id", bookingId);
+      await deleteDoc(doc(db, "bookings", bookingId));
       if (selectedBooking?.id === bookingId) setSelectedBooking(null);
       fetchUsersAndData();
     } catch (e) {
@@ -582,7 +617,7 @@ const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: nu
 
   const handleDeleteRecharge = async (rechargeId: string) => {
     try {
-      await supabase.from("diamond_recharges").delete().eq("id", rechargeId);
+      await deleteDoc(doc(db, "diamond_recharges", rechargeId));
       if (selectedRecharge?.id === rechargeId) setSelectedRecharge(null);
       fetchUsersAndData();
     } catch (e) {
@@ -596,10 +631,28 @@ const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: nu
     }
 
     try {
-      if (user.phone && user.phone.length >= 7) {
-        await supabase.from("profiles").delete().eq("phone", user.phone);
-        await supabase.from("bookings").delete().eq("phone", user.phone);
-        await supabase.from("diamond_recharges").delete().eq("phone", user.phone);
+      const phone = String(user.phone || "").trim();
+      if (phone && phone.length >= 7) {
+        // 1. Delete matching profiles
+        const pQuery = query(collection(db, "profiles"), where("phone", "==", phone));
+        const pSnap = await getDocs(pQuery);
+        for (const d of pSnap.docs) {
+          await deleteDoc(doc(db, "profiles", d.id));
+        }
+
+        // 2. Delete matching bookings
+        const bQuery = query(collection(db, "bookings"), where("phone", "==", phone));
+        const bSnap = await getDocs(bQuery);
+        for (const d of bSnap.docs) {
+          await deleteDoc(doc(db, "bookings", d.id));
+        }
+
+        // 3. Delete matching recharges
+        const rQuery = query(collection(db, "diamond_recharges"), where("phone", "==", phone));
+        const rSnap = await getDocs(rQuery);
+        for (const d of rSnap.docs) {
+          await deleteDoc(doc(db, "diamond_recharges", d.id));
+        }
       }
 
       if (selectedUser?.key === user.key) setSelectedUser(null);
@@ -1264,4 +1317,3 @@ const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: nu
     </>
   );
 }
-

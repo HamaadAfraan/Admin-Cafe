@@ -27,7 +27,8 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Station, StationKind } from "@/lib/stations";
-import { supabase } from "@/lib/supabaseClient";
+import { db } from "@/lib/firebase";
+import { doc, getDoc, setDoc } from "firebase/firestore";
 import viteConfig from "../../vite.config";
 
 export const Route = createFileRoute("/")({
@@ -142,90 +143,56 @@ function Dashboard() {
   const [adminPasswordInput, setAdminPasswordInput] = useState("");
   const [passwordError, setPasswordError] = useState(false);
 
-  useEffect(() => {
+
+useEffect(() => {
     setIsMounted(true);
 
     const fetchCafeTiming = async () => {
       try {
-        // Fetch Regular (Sat-Thu) -> id: 1
-        const { data: regData } = await supabase
-          .from("cafe_settings")
-          .select("open_time, close_time")
-          .eq("id", 1)
-          .maybeSingle();
-
-        if (regData) {
-          if (regData.open_time) setOpenTimeReg(regData.open_time);
-          if (regData.close_time) setCloseTimeReg(regData.close_time);
+        // Fetch Regular (Sat-Thu) -> doc id: "1"
+        const regSnap = await getDoc(doc(db, "cafe_settings", "1"));
+        if (regSnap.exists()) {
+          const regData = regSnap.data() as any;
+          if (regData?.["open_time"]) setOpenTimeReg(regData["open_time"]);
+          if (regData?.["close_time"]) setCloseTimeReg(regData["close_time"]);
         }
 
-        // Fetch Friday -> id: 2
-        const { data: friData } = await supabase
-          .from("cafe_settings")
-          .select("open_time, close_time")
-          .eq("id", 2)
-          .maybeSingle();
-
-        if (friData) {
-          if (friData.open_time) setOpenTimeFri(friData.open_time);
-          if (friData.close_time) setCloseTimeFri(friData.close_time);
+        // Fetch Friday -> doc id: "2"
+        const friSnap = await getDoc(doc(db, "cafe_settings", "2"));
+        if (friSnap.exists()) {
+          const friData = friSnap.data() as any;
+          if (friData?.["open_time"]) setOpenTimeFri(friData["open_time"]);
+          if (friData?.["close_time"]) setCloseTimeFri(friData["close_time"]);
         }
       } catch (e) {
-        console.log("Error fetching settings:", e);
+        console.log("Error fetching settings from Firebase:", e);
       }
     };
     fetchCafeTiming();
   }, []);
 
 const handleSaveTiming = async () => {
-    const targetId = timingTab === "regular" ? 1 : 2;
-    const currentOpen = timingTab === "regular" ? openTimeReg : openTimeFri;
-    const currentClose = timingTab === "regular" ? closeTimeReg : closeTimeFri;
+  const targetId = timingTab === "regular" ? "1" : "2";
+  const currentOpen = timingTab === "regular" ? openTimeReg : openTimeFri;
+  const currentClose = timingTab === "regular" ? closeTimeReg : closeTimeFri;
 
-    try {
-      // Pehle check karo ki row exist karti hai ya nahi, phir update/insert karo
-      const { data: existing } = await supabase
-        .from("cafe_settings")
-        .select("id")
-        .eq("id", targetId)
-        .maybeSingle();
+  try {
+    // Firebase mein setDoc with merge: true se update aur insert dono ek saath handle ho jaate hain
+    await setDoc(doc(db, "cafe_settings", targetId), {
+      open_time: currentOpen,
+      close_time: currentClose,
+      updated_at: new Date().toISOString()
+    }, { merge: true });
 
-      let error;
-      if (existing) {
-        const res = await supabase
-          .from("cafe_settings")
-          .update({
-            open_time: currentOpen,
-            close_time: currentClose,
-            updated_at: new Date().toISOString()
-          })
-          .eq("id", targetId);
-        error = res.error;
-      } else {
-        const res = await supabase
-          .from("cafe_settings")
-          .insert({
-            id: targetId,
-            open_time: currentOpen,
-            close_time: currentClose,
-            updated_at: new Date().toISOString()
-          });
-        error = res.error;
-      }
-
-      if (error) {
-        console.error("Supabase saving error:", error.message);
-      }
-
-      if (targetId === 1 && (mgr as any).updateCafeTiming) {
-        (mgr as any).updateCafeTiming(currentOpen, currentClose);
-      }
-    } catch (e) {
-      console.error("Error in timing save workflow:", e);
+    if (targetId === "1" && (mgr as any).updateCafeTiming) {
+      (mgr as any).updateCafeTiming(currentOpen, currentClose);
     }
+  } catch (e) {
+    console.error("Error saving timing to Firebase:", e);
+  }
 
-    setShowTimingModal(false);
-  };
+  setShowTimingModal(false);
+};
 
   const stations = CAFE_STATIONS;
 
@@ -242,12 +209,12 @@ const handleSaveTiming = async () => {
 
   const active = isMounted ? Object.keys(mgr.sessions || {}).length : 0;
 
-  const pendingBookingsCount = useMemo(() => {
+const pendingBookingsCount = useMemo(() => {
     if (!isMounted) return 0;
     const list = Array.isArray(mgr.bookings) ? mgr.bookings : [];
     return list.filter((b) => {
       const statusStr = String(b?.status || "").trim().toUpperCase();
-      const custName = String(b?.customer_name || b?.customer || "").toLowerCase();
+      const custName = String(b?.customer_name || "").toLowerCase(); // <-- yahan se `b?.customer` hata diya
       const bId = String(b?.id || "").toUpperCase();
 
       const isPending = statusStr === "PENDING";
@@ -507,7 +474,7 @@ const handleSaveTiming = async () => {
                 if (b.station_id !== station.id) return false;
 
                 const statusStr = String(b?.status || "").trim().toUpperCase();
-                const custName = String(b?.customer_name || b?.customer || "").toLowerCase();
+                const custName = String(b?.customer_name || "").toLowerCase(); // <-- yahan se `|| b?.customer` hata diya
 
                 const isPending = statusStr === "PENDING";
                 const isNotAdminBlock = !custName.includes("walk-in") && !custName.includes("reserved") && !custName.includes("admin block");
@@ -565,12 +532,12 @@ const handleSaveTiming = async () => {
             )}
           </Button>
 
-          <ConsoleScheduleModal
+<ConsoleScheduleModal
             stations={stations}
             sessions={isMounted ? mgr.sessions || {} : {}}
             cafeHours={{
-              openTime: openTimeReg,
-              closeTime: closeTimeReg,
+              openTime: openTimeReg,   // Database se fetched open time yahan aayega
+              closeTime: closeTimeReg, // Database se fetched close time yahan aayega
             }}
           />
 
@@ -685,11 +652,12 @@ const handleSaveTiming = async () => {
       </div>
 
       {/* Bookings Modal */}
+{/* Bookings Modal */}
       <BookingsModal
         open={showBookings}
         onOpenChange={setShowBookings}
         bookings={isMounted ? mgr.bookings || [] : []}
-        onApprove={(b) => mgr.approveBooking(b)}
+        onApprove={(b: any) => mgr.approveBooking(b)}
         onReject={(bId) => mgr.rejectBooking(bId)}
       />
 

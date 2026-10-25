@@ -26,7 +26,19 @@ import {
   Globe
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { supabase } from "@/lib/supabaseClient";
+import { db } from "@/lib/firebase";
+import {
+  collection,
+  getDocs,
+  getDoc,
+  doc,
+  addDoc,
+  deleteDoc,
+  query,
+  where,
+  orderBy,
+  onSnapshot
+} from "firebase/firestore";
 
 type ReservationSlot = {
   id: string;
@@ -55,7 +67,7 @@ const CATEGORIES = [
 ];
 
 const formatDateToISO = (d: Date = new Date()): string => {
-  return d.toISOString().split("T")[0]; // "2026-10-09"
+  return d.toISOString().split("T")[0] || ""; // <-- || "" lagane se undefined error khatam ho jayega
 };
 
 const formatDateToReadable = (d: Date = new Date()): string => {
@@ -84,7 +96,8 @@ function parseTimeToMinutes(timeStr: string | number): number {
   const cleaned = timeStr.trim().toUpperCase();
   const match = cleaned.match(/(\d+):(\d+)\s*(AM|PM)?/);
 
-  if (!match) return 0;
+  // Yahan match[1] aur match[2] ka check add karne se error khatam ho jayega
+  if (!match || !match[1] || !match[2]) return 0;
 
   let hours = parseInt(match[1], 10);
   const minutes = parseInt(match[2], 10);
@@ -128,23 +141,27 @@ function format12HourDisplay(time24?: string) {
   if (!time24) return "--:--";
   try {
     const parts = time24.split(" - ");
-    const startPart = parts[0];
+    const startPart = parts[0] || ""; // <-- Fallback to empty string
 
     if (/AM|PM/i.test(startPart)) return time24;
 
-    const [h, m] = startPart.split(":").map(Number);
+    const timeParts = startPart.split(":");
+    const h = parseInt(timeParts[0] || "0", 10);
+    const m = parseInt(timeParts[1] || "0", 10);
+
+    if (isNaN(h)) return time24;
+
     let displayHour = h > 12 ? h - 12 : h;
     if (displayHour === 0) displayHour = 12;
     const ampm = h >= 12 ? "PM" : "AM";
 
     const formattedHour = displayHour.toString().padStart(2, "0");
-    const formattedMin = (m || 0).toString().padStart(2, "0");
+    const formattedMin = m.toString().padStart(2, "0");
     return `${formattedHour}:${formattedMin} ${ampm}`;
   } catch {
     return time24;
   }
 }
-
 function isStationSimulator(station: any): boolean {
   if (!station) return false;
   const k = (station.kind || "").toLowerCase();
@@ -177,7 +194,7 @@ function getStationDisplayName(station: any): string {
   const id = (station.id || "").toLowerCase();
   const name = (station.name || "").toLowerCase();
 
-  if (id.includes("ps5-01") || id.includes("ps5_01") || name.includes("ps5-01") || name.includes("ps5 01")) {
+  if (id.includes("ps5-01") || id.includes("ps5_02") || name.includes("ps5-01") || name.includes("ps5 01")) {
     return 'PS5-01 (55" VIP)';
   }
   if (id.includes("ps5-02") || id.includes("ps5_02") || name.includes("ps5-02") || name.includes("ps5 02")) {
@@ -208,8 +225,8 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
   const [errorMessage, setErrorMessage] = useState<{ stationId: string; text: string } | null>(null);
   const [, setCurrentTimeTick] = useState(Date.now());
 
-  const CAFE_START_HOUR = cafeHours?.openTime ? parseInt(cafeHours.openTime.split(":")[0], 10) || 11 : 11;
-  const CAFE_END_HOUR = cafeHours?.closeTime ? parseInt(cafeHours.closeTime.split(":")[0], 10) || 22 : 22;
+  const CAFE_START_HOUR = cafeHours?.openTime ? parseInt(cafeHours.openTime.split(":")[0] || "11", 10) || 11 : 11;
+  const CAFE_END_HOUR = cafeHours?.closeTime ? parseInt(cafeHours.closeTime.split(":")[0] || "22", 10) || 22 : 22;
   const TOTAL_CAFE_MINUTES = Math.max(60, (CAFE_END_HOUR - CAFE_START_HOUR) * 60);
 
   const [inputState, setInputState] = useState<Record<string, {
@@ -316,35 +333,36 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
   const fetchBackendReservations = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("bookings")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        console.error("Failed to fetch slots from Supabase:", error);
-        return;
+      const q = query(collection(db, "bookings"), orderBy("created_at", "desc"));
+      let querySnapshot;
+      try {
+        querySnapshot = await getDocs(q);
+      } catch (err) {
+        querySnapshot = await getDocs(collection(db, "bookings"));
       }
 
-      const records = data || [];
+      const records = querySnapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
+
       const grouped: Record<string, ReservationSlot[]> = {};
 
       const today = new Date();
-      const todayISO = formatDateToISO(today); // "2026-10-09"
-      const todayReadable = formatDateToReadable(today).toLowerCase(); // "09-oct-2026"
+      const todayISO = formatDateToISO(today);
+      const todayReadable = formatDateToReadable(today).toLowerCase();
 
       records.forEach((b: any) => {
         const statusStr = String(b.status || "APPROVED").toUpperCase();
         if (statusStr === "REJECTED" || statusStr === "CANCELLED") return;
 
-        // DATE FILTER
         const rawDateStr = String(b.bookingDate || b.booking_date || b.date || "").trim();
         const rawDateLower = rawDateStr.toLowerCase();
 
-        const isTodayBooking = 
-          rawDateStr === todayISO || 
-          rawDateLower === todayReadable || 
-          rawDateLower === "today" || 
+        const isTodayBooking =
+          rawDateStr === todayISO ||
+          rawDateLower === todayReadable ||
+          rawDateLower === "today" ||
           !rawDateStr;
 
         if (!isTodayBooking) return;
@@ -362,7 +380,6 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
 
         let targetStationId = "";
 
-        // EXACT & CATEGORY/SCREEN MATCHING WITH CUSTOMER APP
         const exactMatch = stations.find(s => String(s.id).toLowerCase() === rawStId);
         if (exactMatch) {
           targetStationId = exactMatch.id;
@@ -372,7 +389,6 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
             const sKind = String(s.kind || "").toLowerCase();
             const sName = String(s.name || "").toLowerCase();
 
-            // 1. PS5 VIP vs Regular
             if (categoryStr.includes("ps5") || rawStId.includes("ps5")) {
               if (screenStr.includes("55") || screenStr.includes("vip")) {
                 return sId.includes("ps5-01") || sId.includes("ps5-02") || sName.includes("vip");
@@ -383,7 +399,6 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
               return sKind === "ps5" || sId.includes("ps5");
             }
 
-            // 2. Simulators (Car vs Truck)
             if (categoryStr.includes("sim") || sKind === "sim") {
               if (screenStr.includes("truck") || rawStId.includes("truck")) {
                 return sId.includes("truck") || sName.includes("truck");
@@ -391,12 +406,10 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
               return (sId.includes("sim") || sKind.includes("sim")) && !sId.includes("truck") && !sName.includes("truck");
             }
 
-            // 3. PC
             if (categoryStr.includes("pc") || sKind === "pc") {
               return sKind === "pc" || sKind === "pc_gaming" || sId.includes("pc");
             }
 
-            // 4. PS4
             if (categoryStr.includes("ps4") || sKind === "ps4") {
               return sKind === "ps4" || sId.includes("ps4");
             }
@@ -426,8 +439,12 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
           !String(b.id || "").toUpperCase().startsWith("WLK") &&
           !String(b.customer_name || b.customer || "").toLowerCase().includes("walk-in");
 
-        if (!grouped[targetStationId]) grouped[targetStationId] = [];
-        grouped[targetStationId].push({
+        if (!grouped[targetStationId]) {
+          grouped[targetStationId] = [];
+        }
+
+        // Yahan ?. ya ! lagane se error khatam ho jayega
+        grouped[targetStationId]?.push({
           id: String(b.id),
           customerName: b.customer_name || b.customerName || b.customer || b.name || (isOnline ? "Online Booking" : "Walk-In"),
           phone: b.phone || "",
@@ -442,7 +459,7 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
 
       setReservations(grouped);
     } catch (e) {
-      console.error("Failed to fetch slots from Supabase:", e);
+      console.error("Failed to fetch slots from Firebase:", e);
     } finally {
       setLoading(false);
     }
@@ -451,19 +468,12 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
   useEffect(() => {
     fetchBackendReservations();
 
-    const channel = supabase
-      .channel("schedule_modal_realtime")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "bookings" },
-        () => {
-          fetchBackendReservations();
-        }
-      )
-      .subscribe();
+    const unsubscribe = onSnapshot(collection(db, "bookings"), () => {
+      fetchBackendReservations();
+    });
 
     return () => {
-      supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [stations]);
 
@@ -487,9 +497,9 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
     const validHours = getValidHoursOptions();
     if (validHours.length === 0) return { hour: CAFE_END_HOUR.toString().padStart(2, "0"), min: "00" };
 
-    const firstHour = validHours[0].value;
+    const firstHour = validHours[0]?.value || "11"; // <-- Optional chaining added
     const validMins = getValidMinutesOptions(firstHour);
-    const firstMin = validMins.length > 0 ? validMins[0].value : "00";
+    const firstMin = validMins.length > 0 ? (validMins[0]?.value || "00") : "00"; // <-- Optional chaining added
 
     return { hour: firstHour, min: firstMin };
   };
@@ -514,7 +524,8 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
       if (field === "startHour") {
         const validMins = getValidMinutesOptions(updated.startHour);
         if (!validMins.some(m => m.value === updated.startMin)) {
-          updated.startMin = validMins.length > 0 ? validMins[0].value : "00";
+          // Optional chaining (?.) use karne se undefined error khatam ho jayega
+          updated.startMin = validMins.length > 0 ? (validMins[0]?.value || "00") : "00";
         }
       }
 
@@ -522,8 +533,7 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
     });
   };
 
-  // ADD WALKIN BLOCKING SLOT EXACTLY MATCHING CUSTOMER WEBSITE SCHEMA
-  const handleAddReservation = async (stationId: string, stationKind: string) => {
+  const handleAddReservation = async (stationId: string, _stationKind: string) => {
     setErrorMessage(null);
     const station = stations.find(s => s.id === stationId);
     const isSim = isStationSimulator(station);
@@ -572,10 +582,9 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
       return;
     }
 
-    // Match Customer Website Naming Standards
     const targetCategory = isPs5 ? "PS5" : isPs4 ? "PS4" : isSim ? "Simulator" : "PC";
     const stIdLower = (station.id || "").toLowerCase();
-    
+
     let targetScreen = "";
     if (isPs5) {
       targetScreen = (stIdLower.includes("ps5-01") || stIdLower.includes("ps5-02")) ? '55" VIP' : '43" Standard';
@@ -584,11 +593,10 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
     }
 
     const now = new Date();
-    const todayIsoDate = formatDateToISO(now); // "2026-10-09"
-    const nowIsoString = now.toISOString();     // "2026-10-09T18:31:00.000Z"
+    const todayIsoDate = formatDateToISO(now);
+    const nowIsoString = now.toISOString();
     const walkinName = current.customer.trim() || "Walk-In Blocked";
 
-    // EXACT FIELD MATCH WITH ONLINE CUSTOMER APP SCHEMA
     const newBooking = {
       id: `WALKIN_${Date.now()}`,
       name: walkinName,
@@ -614,14 +622,10 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
     };
 
     try {
-      const { error } = await supabase.from("bookings").insert([newBooking]);
-      if (error) {
-        console.error("Error inserting slot into Supabase:", error);
-      } else {
-        fetchBackendReservations();
-      }
+      await addDoc(collection(db, "bookings"), newBooking);
+      fetchBackendReservations();
     } catch (e) {
-      console.error("Error saving slot to Supabase:", e);
+      console.error("Error saving slot to Firebase:", e);
     }
 
     const resetTime = getInitialValidTime();
@@ -638,11 +642,23 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
 
   const handleRemoveReservation = async (slotId: string) => {
     try {
-      const { error } = await supabase.from("bookings").delete().eq("id", slotId);
-      if (error) console.error("Error deleting slot from Supabase:", error);
+      let targetDocId = String(slotId);
+      const directRef = doc(db, "bookings", targetDocId);
+      const directSnap = await getDoc(directRef);
+
+      if (!directSnap.exists()) {
+        const q = query(collection(db, "bookings"), where("id", "==", slotId));
+        const querySnapshot = await getDocs(q);
+        const docSnap = querySnapshot.docs?.[0];
+        if (docSnap) {
+          targetDocId = docSnap.id;
+        }
+      }
+
+      await deleteDoc(doc(db, "bookings", targetDocId));
       fetchBackendReservations();
     } catch (e) {
-      console.error("Error removing slot:", e);
+      console.error("Error removing slot from Firebase:", e);
     }
   };
 
@@ -651,7 +667,7 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
       <DialogTrigger asChild>
         <Button variant="outline" className="justify-start gap-2 border-purple-500/50 bg-purple-950/40 text-purple-200 hover:bg-purple-900/60 font-bold h-11 text-xs">
           <Calendar className="size-4 text-purple-400" />
-            <div className="ml-2">Walkin Booking</div>
+          <div className="ml-2">Walkin Booking</div>
         </Button>
       </DialogTrigger>
 
@@ -714,13 +730,13 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
             let currentSelectedHour = rawInput?.startHour || defaultTime.hour;
 
             if (!validHours.some(h => h.value === currentSelectedHour)) {
-              currentSelectedHour = validHours.length > 0 ? validHours[0].value : CAFE_END_HOUR.toString().padStart(2, "0");
+              currentSelectedHour = validHours.length > 0 ? (validHours[0]?.value || "11") : CAFE_END_HOUR.toString().padStart(2, "0");
             }
 
             const validMinutes = getValidMinutesOptions(currentSelectedHour);
             let currentSelectedMin = rawInput?.startMin || defaultTime.min;
             if (!validMinutes.some(m => m.value === currentSelectedMin)) {
-              currentSelectedMin = validMinutes.length > 0 ? validMinutes[0].value : "00";
+              currentSelectedMin = validMinutes.length > 0 ? (validMinutes[0]?.value || "00") : "00";
             }
 
             const currentInputs = {
@@ -785,7 +801,7 @@ export function ConsoleScheduleModal({ stations = [], sessions = {}, cafeHours }
                 {errorMessage?.stationId === station.id && (
                   <div className="flex items-center gap-1.5 p-2 rounded bg-red-950/80 border border-red-500/80 text-xs text-red-200 font-bold">
                     <AlertCircle className="size-4 text-red-400 shrink-0" />
-                    <span>{errorMessage.text}</span>
+                    <span>{errorMessage?.text}</span> {/* <-- Yahan bhi ? lagayein */}
                   </div>
                 )}
 

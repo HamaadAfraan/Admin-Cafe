@@ -16,6 +16,7 @@ export type Session = {
   startedAt: number;
   paused: boolean;
   playerCount?: number;
+  startTime?: number | string; // Yeh optional add kar sakte hain
 };
 
 export const KIND_LABEL: Record<StationKind, string> = {

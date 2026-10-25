@@ -2,7 +2,14 @@ import { useState, useEffect } from "react";
 import { X, Search, FileText, IndianRupee, RefreshCw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { supabase } from "@/lib/supabaseClient";
+import { db } from "@/lib/firebase";
+import { 
+  collection, 
+  getDocs, 
+  query, 
+  orderBy, 
+  onSnapshot 
+} from "firebase/firestore";
 import type { GlobalHistoryLog } from "./StationCard";
 
 type Props = {
@@ -12,7 +19,7 @@ type Props = {
 };
 
 export function CustomerRecordsModal({ isOpen, onClose }: Props) {
-  const [logs, setLogs] = useState<GlobalHistoryLog[]>([]);
+  const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
@@ -20,32 +27,35 @@ export function CustomerRecordsModal({ isOpen, onClose }: Props) {
   const fetchStationLogs = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("cafe_record_station")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        console.error("Error fetching station logs:", error);
-        return;
+      const q = query(collection(db, "cafe_record_station"), orderBy("created_at", "desc"));
+      let querySnapshot;
+      try {
+        querySnapshot = await getDocs(q);
+      } catch (err) {
+        querySnapshot = await getDocs(collection(db, "cafe_record_station"));
       }
 
-      const formattedLogs: GlobalHistoryLog[] = (data || []).map((item: any) => ({
-        id: item.id,
-        stationId: item.station_id,
-        kind: item.kind || "ps5",
-        customerName: item.customer_name,
-        customerPhone: item.customer_phone,
-        playedMins: item.played_mins,
-        players: item.players,
-        amount: item.amount,
-        date: item.date,
-        time: item.time,
-      }));
+      const formattedLogs = querySnapshot.docs.map((docSnap) => {
+        const item: any = docSnap.data();
+        return {
+          id: docSnap.id,
+          stationId: item.station_id || "",
+          kind: item.kind || "ps5",
+          customerName: item.customer_name || "",
+          customerPhone: item.customer_phone || "",
+          playedMins: item.played_mins || 0,
+          players: item.players || 1,
+          amount: item.amount || 0,
+          date: item.date || "",
+          startTime: item.start_time || item.startTime || "",
+          endTime: item.end_time || item.endTime || item.time || "", // <-- End time yahan properly map kiya
+          time: item.time || "", 
+        };
+      });
 
       setLogs(formattedLogs);
     } catch (e) {
-      console.error("Failed to fetch logs:", e);
+      console.error("Failed to fetch logs from Firebase:", e);
     } finally {
       setLoading(false);
     }
@@ -55,15 +65,12 @@ export function CustomerRecordsModal({ isOpen, onClose }: Props) {
     if (isOpen) {
       fetchStationLogs();
 
-      const channel = supabase
-        .channel("cafe_record_station_realtime")
-        .on("postgres_changes", { event: "*", schema: "public", table: "cafe_record_station" }, () => {
-          fetchStationLogs();
-        })
-        .subscribe();
+      const unsubscribe = onSnapshot(collection(db, "cafe_record_station"), () => {
+        fetchStationLogs();
+      });
 
       return () => {
-        supabase.removeChannel(channel);
+        unsubscribe();
       };
     }
   }, [isOpen]);
@@ -196,7 +203,12 @@ export function CustomerRecordsModal({ isOpen, onClose }: Props) {
                 <div className="flex items-center justify-between sm:justify-end gap-4 text-right">
                   <div className="text-[10px] text-muted-foreground">
                     <p>{log.date}</p>
-                    <p>{log.time}</p>
+                    {/* Exact Start Time - End Time display */}
+                    <p className="font-mono text-[11px] text-purple-300">
+                      {log.startTime && log.endTime && log.startTime !== log.endTime 
+                        ? `${log.startTime} - ${log.endTime}` 
+                        : log.time}
+                    </p>
                   </div>
                   <span className="text-sm font-black text-emerald-400 bg-emerald-950/30 border border-emerald-800/40 px-2.5 py-1 rounded-md">
                     ₹{log.amount}

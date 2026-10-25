@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
-import { 
-  CalendarClock, 
-  CheckCircle2, 
-  XCircle, 
-  User, 
-  Phone, 
-  Gamepad2, 
-  Clock, 
+import {
+  CalendarClock,
+  CheckCircle2,
+  XCircle,
+  User,
+  Phone,
+  Gamepad2,
+  Clock,
   Search,
   Tag,
   Trash2,
@@ -26,7 +26,18 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { supabase } from "@/lib/supabaseClient";
+import { db } from "@/lib/firebase";
+import {
+  collection,
+  getDocs,
+  getDoc,
+  doc,
+  updateDoc,
+  deleteDoc,
+  query,
+  where,
+  onSnapshot
+} from "firebase/firestore";
 
 export interface BookingRequest {
   id: string;
@@ -84,12 +95,12 @@ const extractBookingDay = (bookingObj: any): string => {
     return formatDateToReadable(new Date());
   }
 
-  const possibleVal = 
-    bookingObj.bookingDate || 
-    bookingObj.booking_date || 
-    bookingObj.bookingdate || 
-    bookingObj.date || 
-    bookingObj.day || 
+  const possibleVal =
+    bookingObj.bookingDate ||
+    bookingObj.booking_date ||
+    bookingObj.bookingdate ||
+    bookingObj.date ||
+    bookingObj.day ||
     bookingObj.slotDate;
 
   if (possibleVal && typeof possibleVal === 'string') {
@@ -117,17 +128,17 @@ const extractBookingDay = (bookingObj: any): string => {
 const extractTimeFromBooking = (b: any): string => {
   if (!b) return "N/A";
 
-  const rawTime = 
-    b.created_time || 
-    b.createdTime || 
-    b.bookedTime || 
-    b.booked_time || 
-    b.bookedAt || 
-    b.booked_at || 
-    b.time || 
-    b.booking_time || 
-    b.createdAt || 
-    b.created_at || 
+  const rawTime =
+    b.created_time ||
+    b.createdTime ||
+    b.bookedTime ||
+    b.booked_time ||
+    b.bookedAt ||
+    b.booked_at ||
+    b.time ||
+    b.booking_time ||
+    b.createdAt ||
+    b.created_at ||
     b.timestamp;
 
   if (!rawTime) return "N/A";
@@ -139,10 +150,15 @@ const extractTimeFromBooking = (b: any): string => {
   }
 
   if (/^\d{1,2}:\d{2}$/.test(strVal)) {
-    const [h, m] = strVal.split(':').map(Number);
-    const period = h >= 12 ? 'PM' : 'AM';
-    const hour12 = h % 12 || 12;
-    return `${String(hour12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
+    const parts = strVal.split(':').map(Number);
+    const h = parts[0];
+    const m = parts[1];
+
+    if (h !== undefined && m !== undefined) {
+      const period = h >= 12 ? 'PM' : 'AM';
+      const hour12 = h % 12 || 12;
+      return `${String(hour12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
+    }
   }
 
   try {
@@ -168,28 +184,56 @@ const isBookingSlotExpired = (booking: BookingRequest): boolean => {
     if (!slotStr) return false;
 
     const formattedDay = extractBookingDay(booking);
-    const todayStr = formatDateToReadable(new Date());
+    
+    const partsDate = formattedDay.split("-");
+    if (partsDate.length === 3) {
+      const dayStr = partsDate[0];
+      const monthStr = partsDate[1];
+      const yearStr = partsDate[2];
 
-    if (formattedDay !== todayStr) return false; 
+      if (dayStr && monthStr && yearStr) {
+        const dayNum = parseInt(dayStr, 10);
+        const yearNum = parseInt(yearStr, 10);
+        const monthsMap: Record<string, number> = {
+          Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+          Jul: 6, Aug: 7, Sep: 8, Sept: 8, Oct: 9, Nov: 10, Dec: 11
+        };
+        
+        if (monthsMap[monthStr] !== undefined) {
+          const bookingDateObj = new Date(yearNum, monthsMap[monthStr], dayNum);
+          const todayObj = new Date();
+          todayObj.setHours(0, 0, 0, 0);
+          bookingDateObj.setHours(0, 0, 0, 0);
 
-    const parts = slotStr.split("-");
-    const endTimeStr = (parts.length > 1 ? parts[1] : parts[0]).trim();
+          if (bookingDateObj.getTime() < todayObj.getTime()) {
+            return true;
+          }
 
-    const match = endTimeStr.match(/(\d+):?(\d+)?\s*(AM|PM)/i);
-    if (!match) return false;
+          if (bookingDateObj.getTime() === todayObj.getTime()) {
+            const timeParts = slotStr.split(/[-–\n]/);
+            const endTimeStr = (timeParts.length > 1 ? timeParts[1] : timeParts[0])?.trim() || "";
 
-    let hours = parseInt(match[1], 10);
-    const minutes = match[2] ? parseInt(match[2], 10) : 0;
-    const modifier = match[3].toUpperCase();
+            const match = endTimeStr.match(/(\d+):?(\d+)?\s*(AM|PM)/i);
+            if (!match || !match[1]) return false;
 
-    if (modifier === "PM" && hours < 12) hours += 12;
-    if (modifier === "AM" && hours === 12) hours = 0;
+            let hours = parseInt(match[1], 10);
+            const minutes = match[2] ? parseInt(match[2], 10) : 0;
+            const modifier = (match[3] || "").toUpperCase();
 
-    const now = new Date();
-    const slotEndTime = new Date();
-    slotEndTime.setHours(hours, minutes, 0, 0);
+            if (modifier === "PM" && hours < 12) hours += 12;
+            if (modifier === "AM" && hours === 12) hours = 0;
 
-    return now.getTime() > slotEndTime.getTime();
+            const now = new Date();
+            const slotEndTime = new Date();
+            slotEndTime.setHours(hours, minutes, 0, 0);
+
+            return now.getTime() >= slotEndTime.getTime();
+          }
+        }
+      }
+    }
+
+    return false;
   } catch {
     return false;
   }
@@ -221,16 +265,16 @@ interface Props {
   onClearOldRecords?: () => void;
 }
 
-export function BookingsModal({ 
-  open, 
-  onOpenChange, 
-  onApprove, 
+export function BookingsModal({
+  open,
+  onOpenChange,
+  onApprove,
   onReject,
   onDeleteBooking,
   onClearOldRecords
 }: Props) {
   const [localBookings, setLocalBookings] = useState<BookingRequest[]>([]);
-  const [filter, setFilter] = useState<"ALL" | "TODAY" | "TOMORROW" | "PENDING" | "APPROVED" | "REJECTED">("ALL");
+  const [filter, setFilter] = useState<"ALL" | "TODAY" | "TOMORROW" | "PENDING" | "APPROVED" | "REJECTED" | "PAST">("ALL");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState<BookingRequest | null>(null);
@@ -238,48 +282,39 @@ export function BookingsModal({
   const syncBookingsData = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("bookings")
-        .select("*")
-        .order("created_at", { ascending: false });
+      const querySnapshot = await getDocs(collection(db, "bookings"));
 
-      if (error) {
-        console.error("Error fetching bookings from Supabase:", error);
-      } else if (data) {
-        const normalizedData = data.map((b) => {
-          if (isWalkInBooking(b)) {
-            return { ...b, status: "APPROVED" };
-          }
-          return b;
-        });
-        setLocalBookings(normalizedData);
-      }
+      const data = querySnapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      })) as BookingRequest[];
+
+      const normalizedData = data.map((b) => {
+        if (isWalkInBooking(b)) {
+          return { ...b, status: "APPROVED" };
+        }
+        return b;
+      });
+      setLocalBookings(normalizedData);
     } catch (e) {
-      console.error("Failed fetching Supabase bookings:", e);
+      console.error("Failed fetching Firebase bookings:", e);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (open) {
+    if (!open) return;
+
+    syncBookingsData();
+
+    const unsubscribe = onSnapshot(collection(db, "bookings"), () => {
       syncBookingsData();
+    });
 
-      const channel = supabase
-        .channel("bookings_modal_realtime_sync")
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "bookings" },
-          () => {
-            syncBookingsData();
-          }
-        )
-        .subscribe();
-
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    }
+    return () => {
+      unsubscribe();
+    };
   }, [open]);
 
   const handleApprove = async (b: BookingRequest) => {
@@ -294,8 +329,8 @@ export function BookingsModal({
       else assignedStationId = b.platform || "PS4-01";
     }
 
-    const updatedBooking: BookingRequest = { 
-      ...b, 
+    const updatedBooking: BookingRequest = {
+      ...b,
       status: 'APPROVED' as const,
       station_id: assignedStationId,
       stationId: assignedStationId
@@ -304,12 +339,25 @@ export function BookingsModal({
     onApprove(updatedBooking);
 
     try {
-      await supabase
-        .from("bookings")
-        .update({ status: "APPROVED", station_id: assignedStationId })
-        .eq("id", b.id);
+      let targetDocId = String(b.id);
+      const directRef = doc(db, "bookings", targetDocId);
+      const directSnap = await getDoc(directRef);
+
+      if (!directSnap.exists()) {
+        const q = query(collection(db, "bookings"), where("id", "==", b.id));
+        const querySnapshot = await getDocs(q);
+        const docSnap = querySnapshot.docs?.[0];
+        if (docSnap) {
+          targetDocId = docSnap.id;
+        }
+      }
+
+      await updateDoc(doc(db, "bookings", targetDocId), {
+        status: "APPROVED",
+        station_id: assignedStationId
+      });
     } catch (e) {
-      console.error("Failed to approve in Supabase:", e);
+      console.error("Failed to approve in Firebase:", e);
     }
 
     syncBookingsData();
@@ -323,12 +371,23 @@ export function BookingsModal({
     onReject(id);
 
     try {
-      await supabase
-        .from("bookings")
-        .update({ status: "REJECTED" })
-        .eq("id", id);
+      let targetDocId = String(id);
+      const directRef = doc(db, "bookings", targetDocId);
+      const directSnap = await getDoc(directRef);
+
+      if (!directSnap.exists()) {
+        const q = query(collection(db, "bookings"), where("id", "==", id));
+        const querySnapshot = await getDocs(q);
+        
+        const docSnap = querySnapshot.docs?.[0];
+        if (docSnap) {
+          targetDocId = docSnap.id;
+        }
+      }
+
+      await updateDoc(doc(db, "bookings", targetDocId), { status: "REJECTED" });
     } catch (e) {
-      console.error("Failed to reject in Supabase:", e);
+      console.error("Failed to reject in Firebase:", e);
     }
 
     syncBookingsData();
@@ -348,16 +407,23 @@ export function BookingsModal({
     }
 
     try {
-      const { error } = await supabase
-        .from("bookings")
-        .delete()
-        .eq("id", id);
+      let targetDocId = String(id);
+      const directRef = doc(db, "bookings", targetDocId);
+      const directSnap = await getDoc(directRef);
 
-      if (error) {
-        console.error("Failed to delete booking from Supabase:", error);
+      if (!directSnap.exists()) {
+        const q = query(collection(db, "bookings"), where("id", "==", id));
+        const querySnapshot = await getDocs(q);
+
+        const docSnap = querySnapshot.docs?.[0];
+        if (docSnap) {
+          targetDocId = docSnap.id;
+        }
       }
+
+      await deleteDoc(doc(db, "bookings", targetDocId));
     } catch (e) {
-      console.error("Error deleting from Supabase:", e);
+      console.error("Error deleting from Firebase:", e);
     }
 
     syncBookingsData();
@@ -370,7 +436,7 @@ export function BookingsModal({
       const st = String(b.status).toUpperCase();
       if (st === "REJECTED") {
         idsToDelete.push(b.id);
-      } else if (st === "APPROVED" || isWalkInBooking(b)) {
+      } else if (st === "APPROVED" || st === "CONFIRMED" || isWalkInBooking(b)) {
         if (isBookingSlotExpired(b)) {
           idsToDelete.push(b.id);
         }
@@ -379,12 +445,11 @@ export function BookingsModal({
 
     if (idsToDelete.length > 0) {
       try {
-        await supabase
-          .from("bookings")
-          .delete()
-          .in("id", idsToDelete);
+        for (const id of idsToDelete) {
+          await deleteDoc(doc(db, "bookings", id));
+        }
       } catch (e) {
-        console.error("Failed bulk deletion in Supabase:", e);
+        console.error("Failed bulk deletion in Firebase:", e);
       }
     }
 
@@ -406,8 +471,11 @@ export function BookingsModal({
     const tomStr = formatDateToReadable(tom);
 
     const effectiveStatus = isWalkInBooking(b) ? "APPROVED" : String(b.status).toUpperCase();
-    
-    if (filter === "TODAY") {
+    const expired = (effectiveStatus === "APPROVED" || effectiveStatus === "CONFIRMED") && isBookingSlotExpired(b);
+
+    if (filter === "PAST") {
+      matchesFilter = expired;
+    } else if (filter === "TODAY") {
       matchesFilter = bDateNormalized === todayStr;
     } else if (filter === "TOMORROW") {
       matchesFilter = bDateNormalized === tomStr;
@@ -420,7 +488,7 @@ export function BookingsModal({
     const searchLower = search.toLowerCase();
     const utrStr = String(b.utr || "").toLowerCase();
 
-    const matchesSearch = 
+    const matchesSearch =
       name.toLowerCase().includes(searchLower) ||
       (b.phone && String(b.phone).includes(search)) ||
       utrStr.includes(searchLower) ||
@@ -431,10 +499,55 @@ export function BookingsModal({
     return matchesFilter && matchesSearch;
   });
 
+  // Helper function to calculate sorting timestamp based on Booking Date & Slot Start Time
+  const getBookingSortTimestamp = (b: BookingRequest): number => {
+    try {
+      const formattedDay = extractBookingDay(b);
+      const partsDate = formattedDay.split("-");
+      if (partsDate.length !== 3) return 0;
+
+      const dayNum = parseInt(partsDate[0] || "0", 10);
+      const monthStr = partsDate[1] || "";
+      const yearNum = parseInt(partsDate[2] || "0", 10);
+      const monthsMap: Record<string, number> = {
+        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+        Jul: 6, Aug: 7, Sep: 8, Sept: 8, Oct: 9, Nov: 10, Dec: 11
+      };
+
+      if (monthsMap[monthStr] === undefined) return 0;
+
+      const baseDate = new Date(yearNum, monthsMap[monthStr], dayNum);
+
+      const slotStr = b.slot_time || b.slot || b.time_slot || b.timeSlot || "";
+      const startTimeStr = slotStr.split(/[-–\n]/)[0]?.trim() || "";
+
+      const match = startTimeStr.match(/(\d+):?(\d+)?\s*(AM|PM)/i);
+      if (match && match[1]) {
+        let hours = parseInt(match[1], 10);
+        const minutes = match[2] ? parseInt(match[2], 10) : 0;
+        const modifier = (match[3] || "").toUpperCase();
+
+        if (modifier === "PM" && hours < 12) hours += 12;
+        if (modifier === "AM" && hours === 12) hours = 0;
+
+        baseDate.setHours(hours, minutes, 0, 0);
+      }
+
+      return baseDate.getTime();
+    } catch {
+      return 0;
+    }
+  };
+
+  // Sort Bookings: Latest Date & Slot Time at TOP, Older Slots/Dates at BOTTOM
   const sortedBookings = [...filteredBookings].sort((a, b) => {
-    const timeA = a.created_at || a.createdAt ? new Date(a.created_at || a.createdAt!).getTime() : 0;
-    const timeB = b.created_at || b.createdAt ? new Date(b.created_at || b.createdAt!).getTime() : 0;
-    if (timeA && timeB) return timeB - timeA;
+    const sortTimeA = getBookingSortTimestamp(a);
+    const sortTimeB = getBookingSortTimestamp(b);
+
+    if (sortTimeA !== sortTimeB) {
+      return sortTimeB - sortTimeA; // Latest date/slot first
+    }
+
     return String(b.id || "").localeCompare(String(a.id || ""));
   });
 
@@ -485,23 +598,22 @@ export function BookingsModal({
             <div className="relative flex-1">
               <Search className="absolute left-3 top-2.5 size-4 text-slate-400" />
               <Input
-                placeholder="Search by name, phone, UTR, date (e.g. 2026-10-09)..."
+                placeholder="Search by name, phone, UTR, date..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-9 bg-slate-900 border-slate-700 text-xs text-white placeholder:text-slate-500"
               />
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {(["ALL", "TODAY", "TOMORROW", "PENDING", "APPROVED", "REJECTED"] as const).map((st) => (
+              {(["ALL", "TODAY", "TOMORROW", "PENDING", "APPROVED", "REJECTED", "PAST"] as const).map((st) => (
                 <Button
                   key={st}
                   size="sm"
                   variant={filter === st ? "default" : "outline"}
-                  className={`text-xs font-bold cursor-pointer ${
-                    filter === st
-                      ? "bg-amber-500 text-black hover:bg-amber-400"
-                      : "bg-slate-900 border-slate-700 text-slate-300"
-                  }`}
+                  className={`text-xs font-bold cursor-pointer ${filter === st
+                    ? st === "PAST" ? "bg-slate-700 text-white hover:bg-slate-600" : "bg-amber-500 text-black hover:bg-amber-400"
+                    : "bg-slate-900 border-slate-700 text-slate-300"
+                    }`}
                   onClick={() => setFilter(st)}
                 >
                   {st}
@@ -517,7 +629,7 @@ export function BookingsModal({
                 No booking records found.
               </div>
             ) : (
-              sortedBookings.map((b) => {
+              sortedBookings.map((b, index) => {
                 const isWalkIn = isWalkInBooking(b);
                 const statusStr = isWalkIn ? "APPROVED" : String(b.status).toUpperCase();
                 const displaySlot = b.slot_time || b.slot || b.time_slot || b.timeSlot || "Immediate";
@@ -525,12 +637,12 @@ export function BookingsModal({
                 const displayStation = b.screen ? `${station} (${b.screen})` : station;
                 const customerName = b.customer_name || b.name || b.customer || (isWalkIn ? "Walk-In Customer" : "Customer");
                 const bookingDay = extractBookingDay(b);
-                const isExpired = statusStr === "APPROVED" && isBookingSlotExpired(b);
+                const isExpired = (statusStr === "APPROVED" || statusStr === "CONFIRMED") && isBookingSlotExpired(b);
                 const displayAmount = b.price || b.amount || b.total_amount || 0;
 
                 return (
                   <div
-                    key={b.id}
+                    key={`${b.id}-${index}`}
                     onClick={() => setSelectedBooking(b)}
                     className="flex items-center justify-between gap-3 p-3 rounded-xl border border-slate-800/80 bg-slate-900/70 hover:border-amber-500/50 hover:bg-slate-900 transition-all cursor-pointer group"
                   >
@@ -562,17 +674,16 @@ export function BookingsModal({
                           )}
 
                           <Badge
-                            className={`text-[9px] font-black uppercase px-1.5 py-0.5 ${
-                              statusStr === "PENDING"
-                                ? "bg-purple-950 border-purple-500 text-purple-300 animate-pulse"
-                                : statusStr === "APPROVED"
-                                ? isExpired 
+                            className={`text-[9px] font-black uppercase px-1.5 py-0.5 ${statusStr === "PENDING"
+                              ? "bg-purple-950 border-purple-500 text-purple-300 animate-pulse"
+                              : (statusStr === "APPROVED" || statusStr === "CONFIRMED")
+                                ? isExpired
                                   ? "bg-slate-800 border-slate-600 text-slate-400"
                                   : "bg-emerald-950 border-emerald-500 text-emerald-300"
                                 : "bg-red-950 border-red-500 text-red-300"
-                            }`}
+                              }`}
                           >
-                            {statusStr === "APPROVED" && isExpired ? "COMPLETED" : statusStr}
+                            {isExpired ? "PAST" : statusStr}
                           </Badge>
 
                           <span className="px-1.5 py-0.2 rounded text-[10px] font-bold flex items-center gap-1 border bg-amber-950/80 border-amber-500/50 text-amber-300">
@@ -771,7 +882,7 @@ export function BookingsModal({
                 </Button>
               </>
             )}
-            
+
             <Button
               variant="destructive"
               className="bg-red-950 hover:bg-red-900 border border-red-500/40 text-red-300 text-xs font-bold"

@@ -741,11 +741,7 @@ const pendingBookingsCount = useMemo(() => {
                 />
               </div>
 
-              <p className="text-[11px] text-slate-500 bg-slate-950 p-2.5 rounded border border-slate-800">
-                {timingTab === "regular" 
-                  ? "ℹ️ Yeh timings Saturday se Thursday ke saare booking slots ke liye hain (Database ID: 1)." 
-                  : "ℹ️ Yeh timings sirf Friday ke din ke slots ke liye hain (Database ID: 2)."}
-              </p>
+              
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">

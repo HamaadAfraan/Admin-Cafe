@@ -15,7 +15,8 @@ import {
   Clock,
   Save,
   Users,
-  Calendar
+  Calendar,
+  CreditCard
 } from "lucide-react";
 import { StationCard } from "@/components/StationCard";
 import { SettingsDialog } from "@/components/SettingsDialog";
@@ -28,7 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Station, StationKind } from "@/lib/stations";
 import { db } from "@/lib/firebase";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, collection, onSnapshot } from "firebase/firestore";
 import viteConfig from "../../vite.config";
 
 export const Route = createFileRoute("/")({
@@ -127,6 +128,11 @@ function Dashboard() {
 
   const [showBookings, setShowBookings] = useState(false);
   const [showUserProfiles, setShowUserProfiles] = useState(false);
+  const [showCafePaymentsModal, setShowCafePaymentsModal] = useState(false);
+  const [cafePaymentsList, setCafePaymentsList] = useState<any[]>([]);
+  const [cafePaymentSearch, setCafePaymentSearch] = useState("");
+  const [cafePaymentDateMode, setCafePaymentDateMode] = useState<"all" | "today" | "yesterday" | "custom">("all");
+  const [cafePaymentCustomDate, setCafePaymentCustomDate] = useState("");
 
   const [showTimingModal, setShowTimingModal] = useState(false);
   const [timingTab, setTimingTab] = useState<"regular" | "friday">("regular");
@@ -144,12 +150,11 @@ function Dashboard() {
   const [passwordError, setPasswordError] = useState(false);
 
 
-useEffect(() => {
+  useEffect(() => {
     setIsMounted(true);
 
     const fetchCafeTiming = async () => {
       try {
-        // Fetch Regular (Sat-Thu) -> doc id: "1"
         const regSnap = await getDoc(doc(db, "cafe_settings", "1"));
         if (regSnap.exists()) {
           const regData = regSnap.data() as any;
@@ -157,7 +162,6 @@ useEffect(() => {
           if (regData?.["close_time"]) setCloseTimeReg(regData["close_time"]);
         }
 
-        // Fetch Friday -> doc id: "2"
         const friSnap = await getDoc(doc(db, "cafe_settings", "2"));
         if (friSnap.exists()) {
           const friData = friSnap.data() as any;
@@ -171,28 +175,42 @@ useEffect(() => {
     fetchCafeTiming();
   }, []);
 
-const handleSaveTiming = async () => {
-  const targetId = timingTab === "regular" ? "1" : "2";
-  const currentOpen = timingTab === "regular" ? openTimeReg : openTimeFri;
-  const currentClose = timingTab === "regular" ? closeTimeReg : closeTimeFri;
+  // Realtime listener for Cafe Direct Payments
+  useEffect(() => {
+    if (!isMounted) return;
+    const unsub = onSnapshot(collection(db, "cafe_direct_payments"), (snapshot) => {
+      const list = snapshot.docs.map((docItem) => ({ id: docItem.id, ...docItem.data() }));
+      list.sort((a: any, b: any) => {
+        const timeA = new Date(a.created_at || 0).getTime();
+        const timeB = new Date(b.created_at || 0).getTime();
+        return timeB - timeA;
+      });
+      setCafePaymentsList(list);
+    });
+    return () => unsub();
+  }, [isMounted]);
 
-  try {
-    // Firebase mein setDoc with merge: true se update aur insert dono ek saath handle ho jaate hain
-    await setDoc(doc(db, "cafe_settings", targetId), {
-      open_time: currentOpen,
-      close_time: currentClose,
-      updated_at: new Date().toISOString()
-    }, { merge: true });
+  const handleSaveTiming = async () => {
+    const targetId = timingTab === "regular" ? "1" : "2";
+    const currentOpen = timingTab === "regular" ? openTimeReg : openTimeFri;
+    const currentClose = timingTab === "regular" ? closeTimeReg : closeTimeFri;
 
-    if (targetId === "1" && (mgr as any).updateCafeTiming) {
-      (mgr as any).updateCafeTiming(currentOpen, currentClose);
+    try {
+      await setDoc(doc(db, "cafe_settings", targetId), {
+        open_time: currentOpen,
+        close_time: currentClose,
+        updated_at: new Date().toISOString()
+      }, { merge: true });
+
+      if (targetId === "1" && (mgr as any).updateCafeTiming) {
+        (mgr as any).updateCafeTiming(currentOpen, currentClose);
+      }
+    } catch (e) {
+      console.error("Error saving timing to Firebase:", e);
     }
-  } catch (e) {
-    console.error("Error saving timing to Firebase:", e);
-  }
 
-  setShowTimingModal(false);
-};
+    setShowTimingModal(false);
+  };
 
   const stations = CAFE_STATIONS;
 
@@ -209,12 +227,12 @@ const handleSaveTiming = async () => {
 
   const active = isMounted ? Object.keys(mgr.sessions || {}).length : 0;
 
-const pendingBookingsCount = useMemo(() => {
+  const pendingBookingsCount = useMemo(() => {
     if (!isMounted) return 0;
     const list = Array.isArray(mgr.bookings) ? mgr.bookings : [];
     return list.filter((b) => {
       const statusStr = String(b?.status || "").trim().toUpperCase();
-      const custName = String(b?.customer_name || "").toLowerCase(); // <-- yahan se `b?.customer` hata diya
+      const custName = String(b?.customer_name || "").toLowerCase();
       const bId = String(b?.id || "").toUpperCase();
 
       const isPending = statusStr === "PENDING";
@@ -474,7 +492,7 @@ const pendingBookingsCount = useMemo(() => {
                 if (b.station_id !== station.id) return false;
 
                 const statusStr = String(b?.status || "").trim().toUpperCase();
-                const custName = String(b?.customer_name || "").toLowerCase(); // <-- yahan se `|| b?.customer` hata diya
+                const custName = String(b?.customer_name || "").toLowerCase();
 
                 const isPending = statusStr === "PENDING";
                 const isNotAdminBlock = !custName.includes("walk-in") && !custName.includes("reserved") && !custName.includes("admin block");
@@ -532,12 +550,21 @@ const pendingBookingsCount = useMemo(() => {
             )}
           </Button>
 
-<ConsoleScheduleModal
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-emerald-500/40 bg-emerald-950/40 text-emerald-200 hover:bg-emerald-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all"
+            onClick={() => setShowCafePaymentsModal(true)}
+          >
+            <CreditCard className="size-4 mr-2.5 text-emerald-400" /> Cafe Direct Payments
+          </Button>
+
+          <ConsoleScheduleModal
             stations={stations}
             sessions={isMounted ? mgr.sessions || {} : {}}
             cafeHours={{
-              openTime: openTimeReg,   // Database se fetched open time yahan aayega
-              closeTime: closeTimeReg, // Database se fetched close time yahan aayega
+              openTime: openTimeReg,
+              closeTime: closeTimeReg,
             }}
           />
 
@@ -652,7 +679,6 @@ const pendingBookingsCount = useMemo(() => {
       </div>
 
       {/* Bookings Modal */}
-{/* Bookings Modal */}
       <BookingsModal
         open={showBookings}
         onOpenChange={setShowBookings}
@@ -660,6 +686,269 @@ const pendingBookingsCount = useMemo(() => {
         onApprove={(b: any) => mgr.approveBooking(b)}
         onReject={(bId) => mgr.rejectBooking(bId)}
       />
+
+      {/* Cafe Direct Payments History Modal */}
+      {showCafePaymentsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+          <div className="relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="grid size-9 place-items-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+                  <CreditCard className="size-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-white tracking-wide">
+                    Cafe Direct Payments History
+                  </h2>
+                  <p className="text-[11px] text-slate-400">
+                    All offline cafe visit & QR direct payments (Latest first)
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1 rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-bold text-emerald-400">
+                  <IndianRupee className="size-3.5" /> Total: ₹
+                  {cafePaymentsList
+                    .filter((p) => {
+                      const search = cafePaymentSearch.toLowerCase();
+                      const name = (p.customer_name || p.name || "").toLowerCase();
+                      const phone = (p.phone || "").toLowerCase();
+                      const paymentId = (p.payment_id || "").toLowerCase();
+                      const matchesSearch = name.includes(search) || phone.includes(search) || paymentId.includes(search);
+                      if (!matchesSearch) return false;
+
+                      if (cafePaymentDateMode !== "all") {
+                        const itemTime = p.created_at ? new Date(p.created_at) : new Date();
+                        const today = new Date();
+                        const yesterday = new Date();
+                        yesterday.setDate(today.getDate() - 1);
+
+                        const isSameDate = (d1: Date, d2: Date) =>
+                          d1.getDate() === d2.getDate() &&
+                          d1.getMonth() === d2.getMonth() &&
+                          d1.getFullYear() === d2.getFullYear();
+
+                        if (cafePaymentDateMode === "today" && !isSameDate(itemTime, today)) return false;
+                        if (cafePaymentDateMode === "yesterday" && !isSameDate(itemTime, yesterday)) return false;
+                        if (cafePaymentDateMode === "custom" && cafePaymentCustomDate) {
+                          const customD = new Date(cafePaymentCustomDate);
+                          if (!isSameDate(itemTime, customD)) return false;
+                        }
+                      }
+                      return true;
+                    })
+                    .reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0)}
+                </div>
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-slate-400 hover:text-white cursor-pointer" onClick={() => setShowCafePaymentsModal(false)}>
+                  <X className="size-5" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Search & Date Filter Controls */}
+            <div className="my-3 space-y-2.5">
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-2.5 size-4 text-slate-400" />
+                  <Input
+                    value={cafePaymentSearch}
+                    onChange={(e) => setCafePaymentSearch(e.target.value)}
+                    placeholder="Search by customer name, phone, or payment ID..."
+                    className="pl-9 h-9 text-xs bg-slate-950 border-slate-800 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  />
+                </div>
+
+                <div className="relative w-40">
+                  <Calendar className="absolute left-2.5 top-2.5 size-4 text-emerald-400 pointer-events-none" />
+                  <Input
+                    type="date"
+                    value={cafePaymentCustomDate}
+                    onChange={(e) => {
+                      setCafePaymentCustomDate(e.target.value);
+                      if (e.target.value) setCafePaymentDateMode("custom");
+                    }}
+                    className="pl-8 h-9 text-xs bg-slate-950 border-slate-800 text-white focus:border-emerald-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between bg-slate-950 p-1.5 rounded-lg border border-slate-800">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1 mr-1">Filter:</span>
+                  {[
+                    { id: "all", label: "All Time" },
+                    { id: "today", label: "Today" },
+                    { id: "yesterday", label: "Yesterday" },
+                  ].map((dt) => (
+                    <Button
+                      key={dt.id}
+                      size="sm"
+                      variant={cafePaymentDateMode === dt.id ? "default" : "outline"}
+                      className={
+                        cafePaymentDateMode === dt.id
+                          ? "bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-7 text-xs border-0 cursor-pointer"
+                          : "h-7 text-xs border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800 cursor-pointer"
+                      }
+                      onClick={() => {
+                        setCafePaymentDateMode(dt.id as any);
+                        if (dt.id !== "custom") setCafePaymentCustomDate("");
+                      }}
+                    >
+                      {dt.label}
+                    </Button>
+                  ))}
+                </div>
+
+                {cafePaymentDateMode === "custom" && cafePaymentCustomDate && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-[10px] text-red-400 hover:text-red-300 hover:bg-red-950/40 cursor-pointer"
+                    onClick={() => {
+                      setCafePaymentDateMode("all");
+                      setCafePaymentCustomDate("");
+                    }}
+                  >
+                    Clear Date ({cafePaymentCustomDate})
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto pr-1 space-y-2 max-h-[50vh]">
+              {cafePaymentsList.filter((p) => {
+                const search = cafePaymentSearch.toLowerCase();
+                const name = (p.customer_name || p.name || "").toLowerCase();
+                const phone = (p.phone || "").toLowerCase();
+                const paymentId = (p.payment_id || "").toLowerCase();
+                const matchesSearch = name.includes(search) || phone.includes(search) || paymentId.includes(search);
+                if (!matchesSearch) return false;
+
+                if (cafePaymentDateMode !== "all") {
+                  const itemTime = p.created_at ? new Date(p.created_at) : new Date();
+                  const today = new Date();
+                  const yesterday = new Date();
+                  yesterday.setDate(today.getDate() - 1);
+
+                  const isSameDate = (d1: Date, d2: Date) =>
+                    d1.getDate() === d2.getDate() &&
+                    d1.getMonth() === d2.getMonth() &&
+                    d1.getFullYear() === d2.getFullYear();
+
+                  if (cafePaymentDateMode === "today" && !isSameDate(itemTime, today)) return false;
+                  if (cafePaymentDateMode === "yesterday" && !isSameDate(itemTime, yesterday)) return false;
+                  if (cafePaymentDateMode === "custom" && cafePaymentCustomDate) {
+                    const customD = new Date(cafePaymentCustomDate);
+                    if (!isSameDate(itemTime, customD)) return false;
+                  }
+                }
+                return true;
+              }).length === 0 ? (
+                <div className="py-12 text-center text-xs text-slate-500">
+                  No direct cafe payments recorded for this selection.
+                </div>
+              ) : (
+                (() => {
+                  const filteredList = cafePaymentsList.filter((p) => {
+                    const search = cafePaymentSearch.toLowerCase();
+                    const name = (p.customer_name || p.name || "").toLowerCase();
+                    const phone = (p.phone || "").toLowerCase();
+                    const paymentId = (p.payment_id || "").toLowerCase();
+                    const matchesSearch = name.includes(search) || phone.includes(search) || paymentId.includes(search);
+                    if (!matchesSearch) return false;
+
+                    if (cafePaymentDateMode !== "all") {
+                      const itemTime = p.created_at ? new Date(p.created_at) : new Date();
+                      const today = new Date();
+                      const yesterday = new Date();
+                      yesterday.setDate(today.getDate() - 1);
+
+                      const isSameDate = (d1: Date, d2: Date) =>
+                        d1.getDate() === d2.getDate() &&
+                        d1.getMonth() === d2.getMonth() &&
+                        d1.getFullYear() === d2.getFullYear();
+
+                      if (cafePaymentDateMode === "today" && !isSameDate(itemTime, today)) return false;
+                      if (cafePaymentDateMode === "yesterday" && !isSameDate(itemTime, yesterday)) return false;
+                      if (cafePaymentDateMode === "custom" && cafePaymentCustomDate) {
+                        const customD = new Date(cafePaymentCustomDate);
+                        if (!isSameDate(itemTime, customD)) return false;
+                      }
+                    }
+                    return true;
+                  });
+
+                  let lastDateGroup: string | null = null;
+
+                  return filteredList.map((p, idx) => {
+                    const dateObj = p.created_at ? new Date(p.created_at) : null;
+                    const dateStr = dateObj ? dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'N/A';
+                    const timeStr = dateObj ? dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : 'N/A';
+
+                    // Show divider line when date changes in "All" view
+                    const showDivider = cafePaymentDateMode === "all" && dateStr !== lastDateGroup;
+                    if (cafePaymentDateMode === "all") {
+                      lastDateGroup = dateStr;
+                    }
+
+                    return (
+                      <div key={p.id || idx} className="space-y-2">
+                        {showDivider && (
+                          <div className="relative flex py-2 items-center">
+                            <div className="flex-grow border-t border-slate-800"></div>
+                            <span className="flex-shrink mx-4 text-[10px] font-bold font-mono uppercase tracking-widest text-emerald-500 bg-slate-900 px-3 py-1 rounded-full border border-emerald-900/50">
+                              📅 Date: {dateStr}
+                            </span>
+                            <div className="flex-grow border-t border-slate-800"></div>
+                          </div>
+                        )}
+
+                        <div
+                          className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-lg border border-slate-800 bg-slate-950/70 hover:border-emerald-500/40 transition-all gap-3 text-xs"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="grid size-9 place-items-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 font-bold shrink-0">
+                              <Gamepad2 className="size-5 text-emerald-400" />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-white text-sm">
+                                  {p.customer_name || p.name || "Walk-In Gamer"}
+                                </span>
+                                {p.phone && (
+                                  <span className="text-[11px] font-mono text-slate-400">
+                                    ({p.phone})
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-3 mt-1 text-[11px] text-slate-400 font-mono">
+                                <span>📅 {dateStr} at {timeStr}</span>
+                                {p.payment_id && <span>• ID: <strong className="text-purple-300">{p.payment_id}</strong></span>}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between sm:justify-end gap-4 border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-800">
+                            {p.cashback_diamonds > 0 && (
+                              <span className="text-[10px] font-mono font-bold px-2.5 py-1 rounded-full bg-emerald-950 border border-emerald-500/40 text-emerald-300">
+                                💎 +{p.cashback_diamonds} Diamonds
+                              </span>
+                            )}
+                            <span className="font-black text-emerald-400 text-sm font-orbitron">
+                              ₹{p.amount || 0}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* User Profiles & Booking History Modal */}
       <UserProfilesModal
@@ -740,8 +1029,6 @@ const pendingBookingsCount = useMemo(() => {
                   className="bg-slate-950 border-slate-800 text-white focus:border-amber-500 h-10 text-sm font-mono"
                 />
               </div>
-
-              
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">

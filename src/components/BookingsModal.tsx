@@ -581,14 +581,6 @@ export function BookingsModal({
                 >
                   <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
                 </Button>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  className="bg-red-950/80 hover:bg-red-900 border border-red-500/40 text-red-300 text-xs font-bold gap-1 cursor-pointer"
-                  onClick={handleClearCompleted}
-                >
-                  <Eraser className="size-3.5" /> Clear Completed & Rejected
-                </Button>
               </div>
             </div>
           </DialogHeader>

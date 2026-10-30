@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Station, StationKind } from "@/lib/stations";
 import { db } from "@/lib/firebase";
-import { doc, getDoc, setDoc, collection, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, collection, onSnapshot } from "firebase/firestore";
 import viteConfig from "../../vite.config";
 
 export const Route = createFileRoute("/")({
@@ -242,6 +242,15 @@ function Dashboard() {
       return isPending && isNotAdminBlock && isNotSettings;
     }).length;
   }, [mgr.bookings, isMounted]);
+
+  // Pending Cafe Direct Payments Count
+  const pendingCafePaymentsCount = useMemo(() => {
+    if (!isMounted) return 0;
+    return cafePaymentsList.filter((p: any) => {
+      const status = String(p?.status || "").trim().toUpperCase();
+      return status === "PENDING" || !p.status;
+    }).length;
+  }, [cafePaymentsList, isMounted]);
 
   const stats = [
     { label: "Total", value: String(stations.length), icon: MonitorSmartphone },
@@ -553,10 +562,18 @@ function Dashboard() {
           <Button
             variant="outline"
             size="sm"
-            className="border-emerald-500/40 bg-emerald-950/40 text-emerald-200 hover:bg-emerald-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all"
+            className={cn(
+              "relative border-emerald-500/40 bg-emerald-950/40 text-emerald-200 hover:bg-emerald-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all",
+              pendingCafePaymentsCount > 0 && "border-emerald-300 bg-emerald-600 text-white ring-2 ring-emerald-300"
+            )}
             onClick={() => setShowCafePaymentsModal(true)}
           >
             <CreditCard className="size-4 mr-2.5 text-emerald-400" /> Cafe Direct Payments
+            {pendingCafePaymentsCount > 0 && (
+              <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-black text-white shadow-md animate-pulse">
+                {pendingCafePaymentsCount}
+              </span>
+            )}
           </Button>
 
           <ConsoleScheduleModal
@@ -698,10 +715,10 @@ function Dashboard() {
                 </div>
                 <div>
                   <h2 className="text-base font-bold text-white tracking-wide">
-                    Cafe Direct Payments History
+                    Cafe Direct Payments Verification
                   </h2>
                   <p className="text-[11px] text-slate-400">
-                    All offline cafe visit & QR direct payments (Latest first)
+                    Verify UTR/Transaction IDs and accept or reject payments
                   </p>
                 </div>
               </div>
@@ -714,7 +731,7 @@ function Dashboard() {
                       const search = cafePaymentSearch.toLowerCase();
                       const name = (p.customer_name || p.name || "").toLowerCase();
                       const phone = (p.phone || "").toLowerCase();
-                      const paymentId = (p.payment_id || "").toLowerCase();
+                      const paymentId = (p.payment_id || p.utr || "").toLowerCase();
                       const matchesSearch = name.includes(search) || phone.includes(search) || paymentId.includes(search);
                       if (!matchesSearch) return false;
 
@@ -754,7 +771,7 @@ function Dashboard() {
                   <Input
                     value={cafePaymentSearch}
                     onChange={(e) => setCafePaymentSearch(e.target.value)}
-                    placeholder="Search by customer name, phone, or payment ID..."
+                    placeholder="Search by customer name, phone, or UTR..."
                     className="pl-9 h-9 text-xs bg-slate-950 border-slate-800 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
                   />
                 </div>
@@ -821,7 +838,7 @@ function Dashboard() {
                 const search = cafePaymentSearch.toLowerCase();
                 const name = (p.customer_name || p.name || "").toLowerCase();
                 const phone = (p.phone || "").toLowerCase();
-                const paymentId = (p.payment_id || "").toLowerCase();
+                const paymentId = (p.payment_id || p.utr || "").toLowerCase();
                 const matchesSearch = name.includes(search) || phone.includes(search) || paymentId.includes(search);
                 if (!matchesSearch) return false;
 
@@ -854,7 +871,7 @@ function Dashboard() {
                     const search = cafePaymentSearch.toLowerCase();
                     const name = (p.customer_name || p.name || "").toLowerCase();
                     const phone = (p.phone || "").toLowerCase();
-                    const paymentId = (p.payment_id || "").toLowerCase();
+                    const paymentId = (p.payment_id || p.utr || "").toLowerCase();
                     const matchesSearch = name.includes(search) || phone.includes(search) || paymentId.includes(search);
                     if (!matchesSearch) return false;
 
@@ -886,11 +903,12 @@ function Dashboard() {
                     const dateStr = dateObj ? dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'N/A';
                     const timeStr = dateObj ? dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : 'N/A';
 
-                    // Show divider line when date changes in "All" view
                     const showDivider = cafePaymentDateMode === "all" && dateStr !== lastDateGroup;
                     if (cafePaymentDateMode === "all") {
                       lastDateGroup = dateStr;
                     }
+
+                    const currentStatus = String(p.status || "PENDING").toUpperCase();
 
                     return (
                       <div key={p.id || idx} className="space-y-2">
@@ -909,7 +927,7 @@ function Dashboard() {
                         >
                           <div className="flex items-center gap-3">
                             <div className="grid size-9 place-items-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 font-bold shrink-0">
-                              <Gamepad2 className="size-5 text-emerald-400" />
+                              <CreditCard className="size-5 text-emerald-400" />
                             </div>
                             <div>
                               <div className="flex items-center gap-2">
@@ -924,7 +942,7 @@ function Dashboard() {
                               </div>
                               <div className="flex items-center gap-3 mt-1 text-[11px] text-slate-400 font-mono">
                                 <span>📅 {dateStr} at {timeStr}</span>
-                                {p.payment_id && <span>• ID: <strong className="text-purple-300">{p.payment_id}</strong></span>}
+                                <span>• UTR/ID: <strong className="text-purple-300">{p.payment_id || p.utr || 'N/A'}</strong></span>
                               </div>
                             </div>
                           </div>
@@ -935,9 +953,56 @@ function Dashboard() {
                                 💎 +{p.cashback_diamonds} Diamonds
                               </span>
                             )}
+                            
                             <span className="font-black text-emerald-400 text-sm font-orbitron">
                               ₹{p.amount || 0}
                             </span>
+
+                            {/* Status Badge & Admin Accept / Reject Actions */}
+                            <div className="flex items-center gap-2">
+                              <span className={`text-[10px] font-mono font-bold px-2 py-1 rounded-full uppercase ${
+                                currentStatus === "APPROVED" ? 'bg-emerald-950 border border-emerald-500/40 text-emerald-300' :
+                                currentStatus === "REJECTED" ? 'bg-red-950 border border-red-500/40 text-red-300' :
+                                'bg-amber-950 border border-amber-500/40 text-amber-300 animate-pulse'
+                              }`}>
+                                {currentStatus}
+                              </span>
+
+                              {currentStatus === "PENDING" && (
+                                <div className="flex items-center gap-1.5 ml-1">
+                                  <Button
+                                    size="sm"
+                                    className="h-7 px-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] cursor-pointer"
+                                    onClick={async () => {
+                                      try {
+                                        await updateDoc(doc(db, "cafe_direct_payments", p.id), {
+                                          status: "APPROVED"
+                                        });
+                                      } catch (err) {
+                                        console.error("Error approving payment:", err);
+                                      }
+                                    }}
+                                  >
+                                    Accept
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    className="h-7 px-2.5 bg-red-600 hover:bg-red-500 text-white font-bold text-[10px] cursor-pointer"
+                                    onClick={async () => {
+                                      try {
+                                        await updateDoc(doc(db, "cafe_direct_payments", p.id), {
+                                          status: "REJECTED"
+                                        });
+                                      } catch (err) {
+                                        console.error("Error rejecting payment:", err);
+                                      }
+                                    }}
+                                  >
+                                    Reject
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>

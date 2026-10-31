@@ -102,7 +102,7 @@ export function useStationManager() {
   // 3. HISTORY STATE & SUPABASE SYNC
   const [history, setHistory] = useState<SessionRecord[]>([]);
 
-const fetchSessionHistory = useCallback(async () => {
+  const fetchSessionHistory = useCallback(async () => {
     try {
       const q = query(collection(db, "cafe_record_station"), orderBy("created_at", "desc"));
       const snapshot = await getDocs(q);
@@ -262,10 +262,21 @@ const fetchSessionHistory = useCallback(async () => {
     []
   );
 
+  // 1. START FUNCTION UPDATE
   const start = useCallback(
-    (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
+    async (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
       const now = Date.now();
       const totalMs = minutes * 60_000;
+      const startDateObj = new Date(now);
+      const endDateObj = new Date(now + totalMs);
+
+      const startTimeStr = startDateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+      const endTimeStr = endDateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+
+      const formatTimeWithZero = (tStr: string) => tStr.replace(/\b(\d):/g, "0$1:");
+      const slotTimeFormatted = `${formatTimeWithZero(startTimeStr)} - ${formatTimeWithZero(endTimeStr)}`;
+      const todayIsoDate = startDateObj.toISOString().split("T")[0];
+
       setSessions((prev) => ({
         ...prev,
         [stationId]: {
@@ -279,6 +290,52 @@ const fetchSessionHistory = useCallback(async () => {
           playerCount,
         } as Session,
       }));
+
+      // 🔴 FIREBASE BOOKINGS MEIN LIVE SESSION SAVE KARO
+      const station = stationsRef.current.find((s) => s.id === stationId);
+      const isSim = station?.kind === "sim" || stationId.startsWith("SIM-");
+      const isPs5 = station?.kind === "ps5" || stationId.startsWith("PS5-");
+      const isPs4 = station?.kind === "ps4" || stationId.startsWith("PS4-");
+
+      let targetCategory = isPs5 ? "PS5" : isPs4 ? "PS4" : isSim ? "Simulator" : "PC";
+      let targetScreen = "";
+      if (isPs5) {
+        targetScreen = (stationId === "PS5-01" || stationId === "PS5-02") ? '55" VIP' : '43" Standard';
+      } else if (isSim) {
+        targetScreen = stationId === "SIM-03" ? "Truck" : "Car";
+      }
+
+      const liveBookingDocId = `LIVE_SESSION_${stationId}`;
+      const liveBooking = {
+        id: liveBookingDocId,
+        name: customer.trim() || "Walk-In Live Player",
+        customer_name: customer.trim() || "Walk-In Live Player",
+        phone: "0000000000",
+        email: "livesession@cafe.internal",
+        utr: "LIVE-ON-CONSOLE",
+        bookingDate: todayIsoDate,
+        category: targetCategory,
+        station_id: stationId,
+        stationId: stationId,
+        platform: targetCategory,
+        screen: targetScreen,
+        team: `${playerCount} Player`,
+        selectedGame: "",
+        duration: `${minutes} mins`,
+        slot: slotTimeFormatted,
+        slot_time: slotTimeFormatted,
+        price: 0,
+        amount: 0,
+        status: "APPROVED",
+        createdAt: startDateObj.toISOString(),
+        created_at: startDateObj.toISOString()
+      };
+
+      try {
+        await setDoc(doc(db, "bookings", liveBookingDocId), liveBooking);
+      } catch (err) {
+        console.error("Failed to sync live session to Firebase:", err);
+      }
 
       fire(stationId, "START", minutes);
       toast.success(`${stationId} started for ${minutes} mins`);
@@ -355,7 +412,7 @@ const fetchSessionHistory = useCallback(async () => {
   }, [fetchBookings]);
 
 
-// REALTIME SYNC FOR BOOKINGS USING FIREBASE FIRESTORE
+  // REALTIME SYNC FOR BOOKINGS USING FIREBASE FIRESTORE
   useEffect(() => {
     // Firestore real-time listener setup
     const unsubscribe = onSnapshot(
@@ -365,7 +422,7 @@ const fetchSessionHistory = useCallback(async () => {
           id: doc.id,
           ...doc.data(),
         })) as BookingRequest[];
-        
+
         setBookings(bookingsList);
       },
       (error) => {
@@ -379,7 +436,7 @@ const fetchSessionHistory = useCallback(async () => {
     };
   }, []);
 
-const approveBooking = useCallback(
+  const approveBooking = useCallback(
     async (booking: BookingRequest) => {
       setBookings((prev) =>
         prev.map((b) => (b.id === booking.id ? { ...b, status: "APPROVED" } : b))
@@ -399,7 +456,7 @@ const approveBooking = useCallback(
     [fetchBookings]
   );
 
-const addWalkInReservation = useCallback(
+  const addWalkInReservation = useCallback(
     async (stationId: string, name: string, startTime: string, durationMinutes: number) => {
       const todayStr = "Today";
       const newSlotId = `WALKIN-${Date.now()}`;
@@ -440,7 +497,7 @@ const addWalkInReservation = useCallback(
           ...newBookingObj,
           created_at: new Date().toISOString()
         });
-        
+
         toast.success(`Walk-In reserved: ${stationId} (${startTime})`);
       } catch (err) {
         toast.info("Saved locally (Firebase sync pending)");
@@ -455,7 +512,7 @@ const addWalkInReservation = useCallback(
       setBookings((prev) => prev.filter((b) => b.id !== slotId));
 
       try {
-       await deleteDoc(doc(db, "bookings", slotId));
+        await deleteDoc(doc(db, "bookings", slotId));
         toast.info("Walk-In slot removed");
       } catch (err) {
         /* silent catch */
@@ -464,7 +521,7 @@ const addWalkInReservation = useCallback(
     []
   );
 
-const rejectBooking = useCallback(
+  const rejectBooking = useCallback(
     async (bookingId: string) => {
       setBookings((prev) =>
         prev.map((b) => (b.id === bookingId ? { ...b, status: "REJECTED" } : b))
@@ -484,7 +541,7 @@ const rejectBooking = useCallback(
     [fetchBookings]
   );
 
-const deleteSessionHistory = useCallback(async (recordId: string) => {
+  const deleteSessionHistory = useCallback(async (recordId: string) => {
     setHistory((prev) => prev.filter((item) => item.id !== recordId));
     try {
       await deleteDoc(doc(db, "cafe_record_station", recordId));
@@ -496,8 +553,9 @@ const deleteSessionHistory = useCallback(async (recordId: string) => {
 
 
 
+  // 2. LOCK FUNCTION UPDATE
   const lock = useCallback(
-    (stationId: string, reason: "expired" | "forced") => {
+    async (stationId: string, reason: "expired" | "forced") => {
       setSessions((prev) => {
         const sessionToLock = prev[stationId];
         if (!sessionToLock) return prev;
@@ -509,6 +567,14 @@ const deleteSessionHistory = useCallback(async (recordId: string) => {
         return next;
       });
 
+      // 🔴 SESSION FINISH HOTE HI FIREBASE BOOKINGS SE RECORD DELETe/CLEAN KARO
+      try {
+        const liveBookingDocId = `LIVE_SESSION_${stationId}`;
+        await deleteDoc(doc(db, "bookings", liveBookingDocId));
+      } catch (err) {
+        console.error("Failed to clear live session booking:", err);
+      }
+
       fire(stationId, "LOCK");
       toast[reason === "expired" ? "warning" : "error"](
         reason === "expired"
@@ -519,39 +585,39 @@ const deleteSessionHistory = useCallback(async (recordId: string) => {
     [fire, logSessionHistory]
   );
 
-useEffect(() => {
-  const timer = setInterval(() => {
-    setSessions((prev) => {
-      const keys = Object.keys(prev);
-      if (keys.length === 0) return prev;
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSessions((prev) => {
+        const keys = Object.keys(prev);
+        if (keys.length === 0) return prev;
 
-      let changed = false;
-      const next = { ...prev };
+        let changed = false;
+        const next = { ...prev };
 
-      for (const id of keys) {
-        const s = next[id];
-        if (s.paused) continue;
+        for (const id of keys) {
+          const s = next[id];
+          if (s.paused) continue;
 
-        const rem = s.remainingMs - 1000;
-        if (rem <= 0) {
-          // Type assertion 'as Session' add kar diya hai
-          logSessionHistory({ ...s, remainingMs: 0 } as Session);
-          delete next[id];
-          changed = true;
-          fire(id, "LOCK");
-          toast.warning(`${id} session ended — TV Locked`);
-        } else {
-          next[id] = { ...s, remainingMs: rem };
-          changed = true;
+          const rem = s.remainingMs - 1000;
+          if (rem <= 0) {
+            // Type assertion 'as Session' add kar diya hai
+            logSessionHistory({ ...s, remainingMs: 0 } as Session);
+            delete next[id];
+            changed = true;
+            fire(id, "LOCK");
+            toast.warning(`${id} session ended — TV Locked`);
+          } else {
+            next[id] = { ...s, remainingMs: rem };
+            changed = true;
+          }
         }
-      }
 
-      return changed ? next : prev;
-    });
-  }, 1000);
+        return changed ? next : prev;
+      });
+    }, 1000);
 
-  return () => clearInterval(timer);
-}, [fire, logSessionHistory]);
+    return () => clearInterval(timer);
+  }, [fire, logSessionHistory]);
 
   const extend = useCallback((stationId: string, extraMins: number) => {
     setSessions((prev) => {

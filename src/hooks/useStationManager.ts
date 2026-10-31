@@ -619,23 +619,58 @@ export function useStationManager() {
     return () => clearInterval(timer);
   }, [fire, logSessionHistory]);
 
-  const extend = useCallback((stationId: string, extraMins: number) => {
-    setSessions((prev) => {
-      const existing = prev[stationId];
-      if (!existing) return prev;
+const extend = useCallback(async (stationId: string, extraMins: number) => {
+    const existing = sessions[stationId];
+    if (!existing) return;
 
-      const addMs = extraMins * 60_000;
+    const addMs = extraMins * 60_000;
+    const newTotalMs = (existing.totalMs || 0) + addMs;
+    const newRemainingMs = (existing.remainingMs || 0) + addMs;
+
+    // Start time aur naya end time safely calculate karo
+    const startTimeMs = existing.startedAt || existing.startTime || Date.now();
+    const newEndDateObj = new Date(startTimeMs + newTotalMs);
+    const startDateObj = new Date(startTimeMs);
+
+    const startTimeStr = startDateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+    const endTimeStr = newEndDateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+
+    const formatTimeWithZero = (tStr: string) => tStr.replace(/\b(\d):/g, "0$1:");
+    const updatedEndTimeStr = `${formatTimeWithZero(startTimeStr)} - ${formatTimeWithZero(endTimeStr)}`;
+    
+    const totalMinutes = Math.round(newTotalMs / 60_000);
+    const updatedDurationStr = `${totalMinutes} mins`;
+
+    // Local session state update karo
+    setSessions((prev) => {
+      const curr = prev[stationId];
+      if (!curr) return prev;
       return {
         ...prev,
         [stationId]: {
-          ...existing,
-          totalMs: existing.totalMs + addMs,
-          remainingMs: existing.remainingMs + addMs,
+          ...curr,
+          totalMs: newTotalMs,
+          remainingMs: newRemainingMs,
         },
       };
     });
+
+    // 🔴 FIREBASE MEIN LIVE BOOKING KA SLOT AUR DURATION UPDATE KARO
+    try {
+      const liveBookingDocId = `LIVE_SESSION_${stationId}`;
+      const docRef = doc(db, "bookings", liveBookingDocId);
+      
+      await updateDoc(docRef, {
+        slot: updatedEndTimeStr,
+        slot_time: updatedEndTimeStr,
+        duration: updatedDurationStr
+      });
+    } catch (err) {
+      console.error("Failed to update extended time in Firebase:", err);
+    }
+
     toast.info(`${stationId} extended by ${extraMins} mins`);
-  }, []);
+  }, [sessions]);
 
   const togglePause = useCallback((stationId: string) => {
     setSessions((prev) => {

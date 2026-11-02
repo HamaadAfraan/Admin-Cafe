@@ -1,19 +1,19 @@
 import { useState, useEffect } from "react";
-import { 
-  Users, 
-  Search, 
-  Phone, 
-  Mail, 
-  Calendar, 
-  Gamepad2, 
-  Clock, 
-  CheckCircle2, 
-  XCircle, 
-  Trash2, 
-  RefreshCw, 
-  Eye, 
-  Receipt, 
-  IndianRupee, 
+import {
+  Users,
+  Search,
+  Phone,
+  Mail,
+  Calendar,
+  Gamepad2,
+  Clock,
+  CheckCircle2,
+  XCircle,
+  Trash2,
+  RefreshCw,
+  Eye,
+  Receipt,
+  IndianRupee,
   ArrowLeft,
   CalendarDays,
   History,
@@ -35,28 +35,28 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { 
-  Select, 
-  SelectContent, 
-  SelectItem, 
-  SelectTrigger, 
-  SelectValue 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
 } from "@/components/ui/select";
 import { db } from "@/lib/firebase";
-import { 
-  collection, 
-  getDocs, 
-  doc, 
-  getDoc, 
-  setDoc, 
-  updateDoc, 
-  deleteDoc, 
-  addDoc, 
+import {
+  collection,
+  getDocs,
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  addDoc,
   query,
-  where, 
+  where,
   limit,
-  orderBy, 
-  onSnapshot 
+  orderBy,
+  onSnapshot
 } from "firebase/firestore";
 
 export interface UserProfile {
@@ -108,7 +108,7 @@ function parseTimeToMinutes(timeStr: string): number {
   if (!timeStr) return 0;
   const cleaned = timeStr.trim().toUpperCase();
   const match = cleaned.match(/(\d+):(\d+)\s*(AM|PM)?/);
-  
+
   // Yahan check kar liya ki match[1] aur match[2] undefined nahi hain
   if (!match || !match[1] || !match[2]) return 0;
 
@@ -168,7 +168,7 @@ export function UserProfilesModal({ open, onOpenChange, initialTab = "profiles" 
   // Confirmation dialog state for granting diamonds to selected user
   const [confirmPack, setConfirmPack] = useState<{ amount: number; diamonds: number } | null>(null);
 
-const fetchUsersAndData = async () => {
+  const fetchUsersAndData = async () => {
     setLoading(true);
     try {
       // 1. Fetch Profiles from Firebase
@@ -369,7 +369,7 @@ const fetchUsersAndData = async () => {
     }
   };
 
-useEffect(() => {
+  useEffect(() => {
     if (!open) return;
 
     setActiveTab(initialTab);
@@ -396,7 +396,7 @@ useEffect(() => {
     };
   }, [open, initialTab]);
 
-const handleApproveBooking = async (booking: any) => {
+  const handleApproveBooking = async (booking: any) => {
     try {
       // 1. Update booking status in Firebase
       await updateDoc(doc(db, "bookings", booking.id), { status: "APPROVED" });
@@ -515,7 +515,7 @@ const handleApproveBooking = async (booking: any) => {
   };
 
 
-const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: number) => {
+  const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: number) => {
     if (!selectedUser) return;
 
     try {
@@ -556,14 +556,18 @@ const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: nu
       }
 
       // 3. Add record to diamond_recharges collection in Firebase
+      // 3. Add record to diamond_recharges collection in Firebase (with user_id & email linkage)
       await addDoc(collection(db, "diamond_recharges"), {
+        user_id: selectedUser.key, // <-- Yeh ensure karega ki user ki ID match ho
         phone: phone,
+        email: selectedUser.email || "",
         customer_name: selectedUser.name,
         diamonds: diamondsToAdd,
         amount: amount,
         utr: "ADMIN_DIRECT_GRANT",
         status: "APPROVED",
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        createdAt: new Date()
       });
 
       setSelectedUser(prev => prev ? {
@@ -593,7 +597,7 @@ const handleGrantSelectedUserDiamonds = async (amount: number, diamondsToAdd: nu
   };
 
 
-const handleRejectRecharge = async (rechargeId: string) => {
+  const handleRejectRecharge = async (rechargeId: string) => {
     try {
       await updateDoc(doc(db, "diamond_recharges", rechargeId), { status: "REJECTED" });
       fetchUsersAndData();
@@ -708,9 +712,8 @@ const handleRejectRecharge = async (rechargeId: string) => {
                 <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800">
                   <button
                     onClick={() => setActiveTab("recharges")}
-                    className={`px-3 py-1 rounded text-xs font-bold transition-all flex items-center gap-1.5 ${
-                      activeTab === "recharges" ? "bg-cyan-600 text-white shadow" : "text-slate-400 hover:text-white"
-                    }`}
+                    className={`px-3 py-1 rounded text-xs font-bold transition-all flex items-center gap-1.5 ${activeTab === "recharges" ? "bg-cyan-600 text-white shadow" : "text-slate-400 hover:text-white"
+                      }`}
                   >
                     💎 Diamond Requests
                     {pendingRechargesCount > 0 && (
@@ -721,9 +724,8 @@ const handleRejectRecharge = async (rechargeId: string) => {
                   </button>
                   <button
                     onClick={() => setActiveTab("profiles")}
-                    className={`px-3 py-1 rounded text-xs font-bold transition-all ${
-                      activeTab === "profiles" ? "bg-purple-600 text-white shadow" : "text-slate-400 hover:text-white"
-                    }`}
+                    className={`px-3 py-1 rounded text-xs font-bold transition-all ${activeTab === "profiles" ? "bg-purple-600 text-white shadow" : "text-slate-400 hover:text-white"
+                      }`}
                   >
                     User Profiles ({users.length})
                   </button>
@@ -758,7 +760,7 @@ const handleRejectRecharge = async (rechargeId: string) => {
                   <div className="space-y-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-lg font-black text-white">{selectedUser.name}</h3>
-                      
+
                       {(() => {
                         const league = getUserLeague(selectedUser.loyaltyTier, selectedUser.gamerPoints);
                         return (
@@ -803,38 +805,58 @@ const handleRejectRecharge = async (rechargeId: string) => {
                 </div>
               </div>
 
-              {/* DIRECT GIVE DIAMONDS PACKS FOR SELECTED USER */}
-              <div className="p-4 rounded-xl bg-cyan-950/20 border border-cyan-500/40 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-cyan-300 flex items-center gap-1.5">
-                    <Gem className="size-4 text-cyan-400 animate-pulse" /> Admin Quick Grant Diamonds to {selectedUser.name}
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <Button
-                    onClick={() => setConfirmPack({ amount: 500, diamonds: 600 })}
-                    className="bg-cyan-950 border border-cyan-500/60 text-cyan-200 hover:bg-cyan-600 hover:text-white font-bold text-xs py-3 h-auto flex flex-col gap-1 shadow"
-                  >
-                    <span className="text-sm font-black text-white">₹500 Pack</span>
-                    <span className="text-cyan-300">💎 600 Diamonds</span>
-                  </Button>
+              {/* Custom Diamond Grant Box with Auto-Calculation (Locked Diamond Input) */}
+              <div className="p-4 rounded-xl bg-purple-950/20 border border-purple-500/40 space-y-3 mt-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-purple-300 flex items-center gap-1.5">
+                  <PlusCircle className="size-4 text-purple-400" /> Custom Amount & Auto Diamond Grant
+                </span>
+
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <Input
+                    type="number"
+                    id="custom-amount"
+                    placeholder="Enter Rupees (₹) e.g. 100"
+                    className="bg-slate-950 border-slate-800 text-white text-xs h-9 flex-1 font-mono"
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      const diamondInput = document.getElementById('custom-diamonds') as HTMLInputElement;
+                      if (diamondInput) {
+                        // Auto calculation: ₹10 = 1 Diamond
+                        diamondInput.value = val > 0 ? String(Math.floor(val / 10)) : '';
+                      }
+                    }}
+                  />
+
+                  <Input
+                    type="number"
+                    id="custom-diamonds"
+                    placeholder="Diamonds (🔒 Locked)"
+                    readOnly
+                    className="bg-slate-900/80 border-slate-800 text-cyan-300 text-xs h-9 flex-1 font-mono cursor-not-allowed opacity-90 font-bold"
+                  />
 
                   <Button
-                    onClick={() => setConfirmPack({ amount: 1000, diamonds: 1200 })}
-                    className="bg-cyan-950 border border-cyan-500/60 text-cyan-200 hover:bg-cyan-600 hover:text-white font-bold text-xs py-3 h-auto flex flex-col gap-1 shadow"
-                  >
-                    <span className="text-sm font-black text-white">₹1000 Pack</span>
-                    <span className="text-cyan-300">💎 1200 Diamonds</span>
-                  </Button>
+                    size="sm"
+                    className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs h-9 shrink-0 cursor-pointer"
+                    onClick={() => {
+                      const amtInput = (document.getElementById('custom-amount') as HTMLInputElement)?.value;
+                      const diamInput = (document.getElementById('custom-diamonds') as HTMLInputElement)?.value;
+                      const amt = Number(amtInput);
+                      const diam = Number(diamInput);
 
-                  <Button
-                    onClick={() => setConfirmPack({ amount: 2000, diamonds: 2500 })}
-                    className="bg-cyan-950 border border-cyan-500/60 text-cyan-200 hover:bg-cyan-600 hover:text-white font-bold text-xs py-3 h-auto flex flex-col gap-1 shadow"
+                      if (amt > 0 && diam > 0) {
+                        setConfirmPack({ amount: amt, diamonds: diam });
+                      } else {
+                        alert('Kripya valid Amount enter karein!');
+                      }
+                    }}
                   >
-                    <span className="text-sm font-black text-white">₹2000 Pack</span>
-                    <span className="text-cyan-300">💎 2500 Diamonds</span>
+                    Grant Custom
                   </Button>
                 </div>
+                <p className="text-[10px] text-zinc-400 font-mono">
+                  🔒 Diamonds input field is locked for editing. It calculates automatically based on Amount (Rate: ₹10 = 1 💎).
+                </p>
               </div>
 
               {/* Diamond Recharges Section */}
@@ -863,9 +885,8 @@ const handleRejectRecharge = async (rechargeId: string) => {
                             <span className="text-sm font-bold text-cyan-200">
                               💎 {r.diamonds} Diamonds Pack
                             </span>
-                            <Badge className={`text-[9px] font-black uppercase px-2 py-0.5 ${
-                              String(r.status).toUpperCase() === 'PENDING' ? 'bg-amber-950 border-amber-500 text-amber-300 animate-pulse' : 'bg-emerald-950 border-emerald-500 text-emerald-300'
-                            }`}>
+                            <Badge className={`text-[9px] font-black uppercase px-2 py-0.5 ${String(r.status).toUpperCase() === 'PENDING' ? 'bg-amber-950 border-amber-500 text-amber-300 animate-pulse' : 'bg-emerald-950 border-emerald-500 text-emerald-300'
+                              }`}>
                               {r.status || 'PENDING'}
                             </Badge>
                             <span className="text-xs font-mono text-purple-300 bg-purple-950/60 px-2 py-0.5 rounded border border-purple-500/30">
@@ -960,9 +981,8 @@ const handleRejectRecharge = async (rechargeId: string) => {
                       <div
                         key={r.id}
                         onClick={() => setSelectedRecharge(r)}
-                        className={`p-4 rounded-xl border transition-all flex items-center justify-between gap-4 cursor-pointer hover:border-cyan-400 ${
-                          isPending ? "bg-slate-900/90 border-cyan-500/60 shadow-[0_0_15px_rgba(6,182,212,0.15)]" : "bg-slate-900/40 border-slate-800"
-                        }`}
+                        className={`p-4 rounded-xl border transition-all flex items-center justify-between gap-4 cursor-pointer hover:border-cyan-400 ${isPending ? "bg-slate-900/90 border-cyan-500/60 shadow-[0_0_15px_rgba(6,182,212,0.15)]" : "bg-slate-900/40 border-slate-800"
+                          }`}
                       >
                         <div className="flex items-center gap-3.5 min-w-0">
                           <div className="size-11 rounded-lg bg-cyan-950 border border-cyan-500/50 flex items-center justify-center text-cyan-300 shrink-0">
@@ -973,9 +993,8 @@ const handleRejectRecharge = async (rechargeId: string) => {
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-bold text-sm text-white">{r.customer_name || r.name || "Gamer"}</span>
                               <span className="text-xs font-mono text-cyan-300">({r.phone || "No Phone"})</span>
-                              <Badge className={`text-[9px] font-black uppercase px-2 py-0.5 ${
-                                isPending ? 'bg-amber-950 border-amber-500 text-amber-300 animate-pulse' : 'bg-emerald-950 border-emerald-500 text-emerald-300'
-                              }`}>
+                              <Badge className={`text-[9px] font-black uppercase px-2 py-0.5 ${isPending ? 'bg-amber-950 border-amber-500 text-amber-300 animate-pulse' : 'bg-emerald-950 border-emerald-500 text-emerald-300'
+                                }`}>
                                 {r.status || 'PENDING'}
                               </Badge>
                             </div>
@@ -1069,7 +1088,7 @@ const handleRejectRecharge = async (rechargeId: string) => {
                           <div className="min-w-0 space-y-1">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-bold text-sm text-white truncate">{u.name}</span>
-                              
+
                               <span className={`text-[9px] font-black tracking-wider px-2 py-0.5 rounded-md border uppercase flex items-center gap-1 ${league.color}`}>
                                 <Trophy className="size-3" /> {league.name}
                               </span>
@@ -1249,8 +1268,10 @@ const handleRejectRecharge = async (rechargeId: string) => {
 
             <div className="space-y-2.5 py-1 text-xs font-mono">
               <div className="flex justify-between items-center py-1.5 border-b border-slate-800/80">
-                <span className="text-slate-400">Date:</span>
-                <span className="font-semibold text-slate-200">{formatDateToReadable(new Date(selectedRecharge.created_at || Date.now()))}</span>
+                <span className="text-slate-400">Action Time:</span>
+                <span className="text-cyan-300 font-bold font-mono">
+                  {selectedRecharge.created_at ? new Date(selectedRecharge.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : 'N/A'}
+                </span>
               </div>
               <div className="flex justify-between items-center py-1.5 border-b border-slate-800/80">
                 <span className="text-slate-400">Customer Name:</span>
@@ -1270,9 +1291,8 @@ const handleRejectRecharge = async (rechargeId: string) => {
               </div>
               <div className="flex justify-between items-center py-1.5 border-b border-slate-800/80">
                 <span className="text-slate-400">Status:</span>
-                <Badge className={`text-[9px] font-black uppercase px-2 py-0.5 ${
-                  String(selectedRecharge.status).toUpperCase() === 'PENDING' ? 'bg-amber-950 border-amber-500 text-amber-300 animate-pulse' : 'bg-emerald-950 border-emerald-500 text-emerald-300'
-                }`}>
+                <Badge className={`text-[9px] font-black uppercase px-2 py-0.5 ${String(selectedRecharge.status).toUpperCase() === 'PENDING' ? 'bg-amber-950 border-amber-500 text-amber-300 animate-pulse' : 'bg-emerald-950 border-emerald-500 text-emerald-300'
+                  }`}>
                   {selectedRecharge.status || 'PENDING'}
                 </Badge>
               </div>

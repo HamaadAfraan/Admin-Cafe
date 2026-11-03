@@ -262,7 +262,7 @@ export function useStationManager() {
     []
   );
 
-  // 1. START FUNCTION UPDATE
+// 1. START FUNCTION UPDATE
   const start = useCallback(
     async (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
       const now = Date.now();
@@ -291,7 +291,7 @@ export function useStationManager() {
         } as Session,
       }));
 
-      // 🔴 FIREBASE BOOKINGS MEIN LIVE SESSION SAVE KARO
+      // 🔴 STATION INFO RESOLVE KARO
       const station = stationsRef.current.find((s) => s.id === stationId);
       const isSim = station?.kind === "sim" || stationId.startsWith("SIM-");
       const isPs5 = station?.kind === "ps5" || stationId.startsWith("PS5-");
@@ -305,6 +305,7 @@ export function useStationManager() {
         targetScreen = stationId === "SIM-03" ? "Truck" : "Car";
       }
 
+      // 🔴 WALK-IN FORMAT KE MUTABIQ LIVE SESSION SAVE KARO TAAKI FRONTEND TIMELINE BLOCK HO JAYE
       const liveBookingDocId = `LIVE_SESSION_${stationId}`;
       const liveBooking = {
         id: liveBookingDocId,
@@ -312,11 +313,11 @@ export function useStationManager() {
         customer_name: customer.trim() || "Walk-In Live Player",
         phone: "0000000000",
         email: "livesession@cafe.internal",
-        utr: "LIVE-ON-CONSOLE",
+        utr: "WALKIN-CASH",
         bookingDate: todayIsoDate,
         category: targetCategory,
-        station_id: stationId,
-        stationId: stationId,
+        station_id: "", // 👈 WALI-IN KI TARAH BLANK RAKha taaki frontend category match kar le!
+        stationId: "",
         platform: targetCategory,
         screen: targetScreen,
         team: `${playerCount} Player`,

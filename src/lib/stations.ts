@@ -143,7 +143,7 @@ export type ControlPayload = {
     | "HOME" 
     | "BACK" 
     | "HDMI" 
-    | "HDMI2" 
+    | "HIDE"
     | "UP" 
     | "DOWN" 
     | "LEFT" 

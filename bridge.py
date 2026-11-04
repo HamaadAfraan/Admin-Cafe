@@ -22,6 +22,7 @@ CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCK_IMAGE_PATH = os.path.join(BASE_DIR, "assets", "lock.jpg")
+HIDE_IMAGE_PATH = os.path.join(BASE_DIR, "assets", "hide.jpeg")
 
 LAST_REQUEST_TIMES = {}
 
@@ -116,15 +117,27 @@ def apply_lock(ip):
     if not ip: return
 
     def _lock_task():
-        # Wake up screen instantly
         run_adb(ip, ["shell", "input", "keyevent", "224"], fast=True)
         tv_sdcard_dir = "/sdcard/lock.jpg"
-        
-        # Open existing lock image directly from TV storage without pushing every time (Super Fast)
         intent_cmd = ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", f"file://{tv_sdcard_dir}", "-t", "image/*", "--grant-read-uri-permission", "-f", "0x10000000"]
         run_adb(ip, intent_cmd, fast=True)
 
     threading.Thread(target=_lock_task, daemon=True).start()
+
+def apply_hide(ip):
+    logging.info(f"[EXECUTING TV HIDE OVERLAY] Target IP: {ip}")
+    if not ip: return
+
+    def _hide_task():
+        # Wake up screen instantly
+        run_adb(ip, ["shell", "input", "keyevent", "224"], fast=True)
+        tv_sdcard_dir = "/sdcard/hide.jpeg"
+        
+        # Open hide image directly from TV storage[cite: 1]
+        intent_cmd = ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", f"file://{tv_sdcard_dir}", "-t", "image/*", "--grant-read-uri-permission", "-f", "0x10000000"]
+        run_adb(ip, intent_cmd, fast=True)
+
+    threading.Thread(target=_hide_task, daemon=True).start()
 
 KEY_EVENTS = {
     "HOME": ["shell", "input", "keyevent", "3"],
@@ -167,7 +180,6 @@ def add_cors_headers(response):
 def health_check():
     return jsonify({"status": "healthy", "timestamp": time.time()}), 200
 
-# Dummy bookings endpoint to prevent 404 spam from frontend polling
 @app.route('/api/bookings', methods=['GET', 'OPTIONS'], strict_slashes=False)
 def handle_dummy_bookings():
     return jsonify([]), 200
@@ -176,6 +188,12 @@ def handle_dummy_bookings():
 def get_lock_image():
     if os.path.exists(LOCK_IMAGE_PATH):
         return send_file(LOCK_IMAGE_PATH, mimetype='image/jpeg')
+    return "Image not found", 404
+
+@app.route('/hide.jpeg', methods=['GET'], strict_slashes=False)
+def get_hide_image():
+    if os.path.exists(HIDE_IMAGE_PATH):
+        return send_file(HIDE_IMAGE_PATH, mimetype='image/jpeg')
     return "Image not found", 404
 
 @app.route('/api/pc-status', methods=['GET'], strict_slashes=False)
@@ -205,7 +223,6 @@ def handle_control():
             execute_pc_command(ip, "UNLOCK")
             return jsonify({"status": "success", "message": f"{station_id} UNLOCKED"}), 200
         elif action in ["LOCK", "EXPIRE", "SESSION_EXPIRE", "EXPIRE_LOCK", "STOP", "END", "POWER_OFF"]:
-            PC_STATES[setup_id := station_id] = "LOCKED" # safe fallback
             PC_STATES[station_id] = "LOCKED"
             execute_pc_command(ip, "LOCK")
             return jsonify({"status": "success", "message": f"{station_id} LOCKED"}), 200
@@ -222,6 +239,9 @@ def handle_control():
         elif action in ["LOCK", "EXPIRE", "SESSION_EXPIRE", "EXPIRE_LOCK"]:
             apply_lock(ip)
             return jsonify({"status": "success", "message": f"{station_id} LOCKED"}), 200
+        elif action in ["HIDE"]:
+            apply_hide(ip)
+            return jsonify({"status": "success", "message": f"{station_id} HIDDEN WITH IMAGE"}), 200
         elif action in ["STOP", "END", "POWER_OFF"]:
             run_adb_async(ip, ["shell", "input", "keyevent", "223"], fast=True)
             return jsonify({"status": "success", "message": f"{station_id} Powered Off"}), 200

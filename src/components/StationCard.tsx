@@ -1,22 +1,22 @@
 import { useState, useEffect, useRef } from "react";
-import { 
-  Gamepad2, 
-  Monitor, 
-  Car, 
-  Pause, 
-  Play, 
-  Lock, 
+import {
+  Gamepad2,
+  Monitor,
+  Car,
+  Pause,
+  Play,
+  Lock,
   Unlock,
-  User, 
+  User,
   Users,
-  Home, 
-  ArrowLeft, 
-  Tv, 
+  Home,
+  ArrowLeft,
+  Tv,
   Power,
-  ChevronUp, 
-  ChevronDown, 
-  ChevronLeft, 
-  ChevronRight, 
+  ChevronUp,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Crown,
   Phone,
   Volume1,
@@ -25,7 +25,8 @@ import {
   CircleDot,
   CalendarClock,
   CheckCircle2,
-  XCircle
+  XCircle,
+  EyeOff
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -372,8 +373,8 @@ export function StationCard({
                       size="sm"
                       className={cn(
                         "h-8 text-xs font-extrabold transition-all cursor-pointer",
-                        playerCount === p 
-                          ? cn(theme.startBtn, "border-transparent shadow-md") 
+                        playerCount === p
+                          ? cn(theme.startBtn, "border-transparent shadow-md")
                           : "bg-black/40 border-slate-800 text-slate-300 hover:border-slate-600"
                       )}
                       onClick={() => setPlayerCount(p)}
@@ -433,10 +434,10 @@ export function StationCard({
             <Button
               className={cn("w-full font-black tracking-wider shadow-lg transition-all py-2 cursor-pointer", theme.startBtn)}
               onClick={() => {
-                const displayName = customerName.trim() 
-                  ? customerPhone.trim() 
-                    ? `${customerName} (${customerPhone})` 
-                    : customerName 
+                const displayName = customerName.trim()
+                  ? customerPhone.trim()
+                    ? `${customerName} (${customerPhone})`
+                    : customerName
                   : "Guest Player";
 
                 lockTriggeredRef.current = false;
@@ -526,6 +527,17 @@ export function StationCard({
                   <Lock className="size-3 mr-1" /> Lock
                 </Button>
 
+
+                <Button
+  size="sm"
+  variant="outline"
+  className="h-7 px-1 text-[10px] border-purple-800/80 bg-purple-950/80 text-purple-300 hover:bg-purple-600 hover:text-white font-bold w-full cursor-pointer"
+  title="Hide Screen with Image"
+  onClick={() => onControl(station.id, "HIDE", station.ip!)}
+>
+  <EyeOff className="size-3 mr-1" /> HIDE
+</Button>
+
                 <Button
                   size="sm"
                   variant="outline"
@@ -534,16 +546,6 @@ export function StationCard({
                   onClick={() => onControl(station.id, "HDMI", station.ip!)}
                 >
                   <Tv className="size-3 mr-1" /> HDMI 1
-                </Button>
-
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-1 text-[10px] border-slate-800 bg-black/60 text-slate-200 hover:bg-slate-700 hover:text-white w-full cursor-pointer"
-                  title="Input Source (HDMI 2)"
-                  onClick={() => onControl(station.id, "HDMI2", station.ip!)}
-                >
-                  <Tv className="size-3 mr-1" /> HDMI 2
                 </Button>
               </div>
 

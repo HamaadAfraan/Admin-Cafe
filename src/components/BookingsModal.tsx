@@ -184,7 +184,7 @@ const isBookingSlotExpired = (booking: BookingRequest): boolean => {
     if (!slotStr) return false;
 
     const formattedDay = extractBookingDay(booking);
-    
+
     const partsDate = formattedDay.split("-");
     if (partsDate.length === 3) {
       const dayStr = partsDate[0];
@@ -198,7 +198,7 @@ const isBookingSlotExpired = (booking: BookingRequest): boolean => {
           Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
           Jul: 6, Aug: 7, Sep: 8, Sept: 8, Oct: 9, Nov: 10, Dec: 11
         };
-        
+
         if (monthsMap[monthStr] !== undefined) {
           const bookingDateObj = new Date(yearNum, monthsMap[monthStr], dayNum);
           const todayObj = new Date();
@@ -378,7 +378,7 @@ export function BookingsModal({
       if (!directSnap.exists()) {
         const q = query(collection(db, "bookings"), where("id", "==", id));
         const querySnapshot = await getDocs(q);
-        
+
         const docSnap = querySnapshot.docs?.[0];
         if (docSnap) {
           targetDocId = docSnap.id;
@@ -461,6 +461,11 @@ export function BookingsModal({
 
   const filteredBookings = safeBookings.filter((b) => {
     if (!b) return false;
+
+    // 🛑 Live sessions ko bookings modal se hide karne ke liye check:
+    const bId = String(b.id || "").toUpperCase();
+    if (bId.startsWith("LIVE_SESSION_")) return false;
+
     let matchesFilter = true;
 
     const bDateNormalized = extractBookingDay(b);
@@ -736,15 +741,18 @@ export function BookingsModal({
                         </>
                       )}
 
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        title="Delete Record"
-                        className="text-slate-500 hover:text-red-400 hover:bg-red-950/40 size-8 cursor-pointer rounded-lg border border-transparent hover:border-red-500/30"
-                        onClick={() => handleDelete(b.id)}
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
+                      {/* 🛑 Sirf expired ya rejected bookings ko hi delete karne ka option do, chalte hue ya active ko nahi! */}
+                      {(!isWalkIn && (statusStr === "REJECTED" || isExpired)) && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Delete Record"
+                          className="text-slate-500 hover:text-red-400 hover:bg-red-950/40 size-8 cursor-pointer rounded-lg border border-transparent hover:border-red-500/30"
+                          onClick={() => handleDelete(b.id)}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      )}
                     </div>
                   </div>
                 );

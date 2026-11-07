@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
+import { LiveSessionsModal } from "@/components/LiveSessionsModal";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   Activity,
@@ -117,6 +118,8 @@ const FILTERS: { key: "all" | StationKind; label: string }[] = [
 function Dashboard() {
   const mgr = useStationManager();
   const [isMounted, setIsMounted] = useState(false);
+
+  const [showLiveSessionsModal, setShowLiveSessionsModal] = useState(false);
 
   const [filter, setFilter] = useState<"all" | StationKind>("all");
   const [showRecords, setShowRecords] = useState(false);
@@ -675,6 +678,34 @@ function Dashboard() {
           >
             <FileText className="size-4 mr-2.5 text-red-400" /> Detailed Records
           </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            className={cn(
+              "relative border-amber-500/40 bg-amber-950/40 text-amber-200 hover:bg-amber-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all",
+              active > 0 && "border-amber-400 bg-amber-600 text-white ring-2 ring-amber-400"
+            )}
+            onClick={() => setShowLiveSessionsModal(true)}
+          >
+            <Activity className="size-4 mr-2.5 text-amber-400 animate-pulse" />
+            Live Running Sessions
+            {active > 0 && (
+              <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-black text-white shadow-md">
+                {active}
+              </span>
+            )}
+          </Button>
+
+          {/* Live Sessions Management Modal */}
+      <LiveSessionsModal
+        open={showLiveSessionsModal}
+        onOpenChange={setShowLiveSessionsModal}
+        sessions={mgr.sessions}
+        onLockSession={(stationId) => mgr.forceLock(stationId)}
+        onTogglePause={(stationId) => mgr.togglePause(stationId)}
+        onExtendSession={(stationId, mins) => mgr.extend(stationId, mins)}
+      />
 
           <div className="border-t border-slate-800 my-1"></div>
           <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-1">

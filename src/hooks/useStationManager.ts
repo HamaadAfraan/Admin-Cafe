@@ -121,8 +121,8 @@ export function useStationManager() {
           amount: Number(item.amount || 0),
           date: item.date || "",
           rawDate: item.date || "",
-          startTime: item.start_time || item.time || "", // <-- Start time map kiya
-          endTime: item.end_time || item.time || "",     // <-- End time map kiya
+          startTime: item.start_time || item.time || "",
+          endTime: item.end_time || item.time || "",
           timestamp: item.created_at ? new Date(item.created_at).getTime() : Date.now(),
         }));
         setHistory(formatted);
@@ -162,7 +162,6 @@ export function useStationManager() {
       minute: "2-digit",
     });
 
-    // Session ka actual start time format karein
     const startDate = new Date(startTimestamp);
     const startTimeStr = startDate.toLocaleTimeString([], {
       hour: "2-digit",
@@ -181,10 +180,10 @@ export function useStationManager() {
       players: session.playerCount || 1,
       amount: sessionCost,
       date: dateStr,
-      start_time: startTimeStr, // <-- Start time save hoga
-      end_time: timeStr,         // <-- End time save hoga
+      start_time: startTimeStr,
+      end_time: timeStr,
       time: timeStr,
-      created_at: now.toISOString(), // <-- Zaroori hai taaki query orderBy("created_at") kaam kare
+      created_at: now.toISOString(),
     };
 
     try {
@@ -223,7 +222,6 @@ export function useStationManager() {
     }
   }, []);
 
-  // PERSISTENCE EFFECT: Save to LocalStorage instantly on state change
   useEffect(() => {
     try {
       localStorage.setItem(LS_BOOKINGS, JSON.stringify(bookings));
@@ -240,7 +238,6 @@ export function useStationManager() {
     }
   }, [walkInSlots]);
 
-  // Initial fetch for history and bookings
   useEffect(() => {
     fetchSessionHistory();
   }, [fetchSessionHistory]);
@@ -262,7 +259,7 @@ export function useStationManager() {
     []
   );
 
-// 1. START FUNCTION UPDATE
+  // 1. START FUNCTION (Fixed syntax for slotTimeFormatted)
   const start = useCallback(
     async (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
       const now = Date.now();
@@ -291,7 +288,6 @@ export function useStationManager() {
         } as Session,
       }));
 
-      // 🔴 STATION INFO RESOLVE KARO
       const station = stationsRef.current.find((s) => s.id === stationId);
       const isSim = station?.kind === "sim" || stationId.startsWith("SIM-");
       const isPs5 = station?.kind === "ps5" || stationId.startsWith("PS5-");
@@ -305,7 +301,6 @@ export function useStationManager() {
         targetScreen = stationId === "SIM-03" ? "Truck" : "Car";
       }
 
-      // 🔴 WALK-IN FORMAT KE MUTABIQ LIVE SESSION SAVE KARO TAAKI FRONTEND TIMELINE BLOCK HO JAYE
       const liveBookingDocId = `LIVE_SESSION_${stationId}`;
       const liveBooking = {
         id: liveBookingDocId,
@@ -316,7 +311,7 @@ export function useStationManager() {
         utr: "WALKIN-CASH",
         bookingDate: todayIsoDate,
         category: targetCategory,
-        station_id: "", // 👈 WALI-IN KI TARAH BLANK RAKha taaki frontend category match kar le!
+        station_id: "", 
         stationId: "",
         platform: targetCategory,
         screen: targetScreen,
@@ -412,10 +407,7 @@ export function useStationManager() {
     };
   }, [fetchBookings]);
 
-
-  // REALTIME SYNC FOR BOOKINGS USING FIREBASE FIRESTORE
   useEffect(() => {
-    // Firestore real-time listener setup
     const unsubscribe = onSnapshot(
       collection(db, "bookings"),
       (snapshot) => {
@@ -431,7 +423,6 @@ export function useStationManager() {
       }
     );
 
-    // Cleanup listener on component unmount
     return () => {
       unsubscribe();
     };
@@ -548,32 +539,34 @@ export function useStationManager() {
       await deleteDoc(doc(db, "cafe_record_station", recordId));
       toast.success("Record deleted");
     } catch (err) {
-      toast.error("Failed to delete record from Firebase"); // <-- Firebase kar diya
+      toast.error("Failed to delete record from Firebase");
     }
   }, []);
 
-
-
-  // 2. LOCK FUNCTION UPDATE
+  // 2. LOCK FUNCTION (Ensures Firebase deletion happens cleanly)
   const lock = useCallback(
     async (stationId: string, reason: "expired" | "forced") => {
-      setSessions((prev) => {
-        const sessionToLock = prev[stationId];
-        if (!sessionToLock) return prev;
+      let sessionToLock: Session | undefined;
 
-        logSessionHistory(sessionToLock);
+      setSessions((prev) => {
+        sessionToLock = prev[stationId];
+        if (!sessionToLock) return prev;
 
         const next = { ...prev };
         delete next[stationId];
         return next;
       });
 
-      // 🔴 SESSION FINISH HOTE HI FIREBASE BOOKINGS SE RECORD DELETe/CLEAN KARO
+      if (sessionToLock) {
+        await logSessionHistory(sessionToLock);
+      }
+
+      // 🔴 Firebase se turant live session document delete karo
       try {
         const liveBookingDocId = `LIVE_SESSION_${stationId}`;
         await deleteDoc(doc(db, "bookings", liveBookingDocId));
       } catch (err) {
-        console.error("Failed to clear live session booking:", err);
+        console.error("Failed to clear live session booking from Firebase:", err);
       }
 
       fire(stationId, "LOCK");
@@ -586,8 +579,11 @@ export function useStationManager() {
     [fire, logSessionHistory]
   );
 
+  // 3. TIMER EFFECT (Triggers lock when remainingMs reaches 0)
   useEffect(() => {
     const timer = setInterval(() => {
+      const expiredStationIds: string[] = [];
+
       setSessions((prev) => {
         const keys = Object.keys(prev);
         if (keys.length === 0) return prev;
@@ -601,12 +597,9 @@ export function useStationManager() {
 
           const rem = s.remainingMs - 1000;
           if (rem <= 0) {
-            // Type assertion 'as Session' add kar diya hai
-            logSessionHistory({ ...s, remainingMs: 0 } as Session);
             delete next[id];
             changed = true;
-            fire(id, "LOCK");
-            toast.warning(`${id} session ended — TV Locked`);
+            expiredStationIds.push(id);
           } else {
             next[id] = { ...s, remainingMs: rem };
             changed = true;
@@ -615,12 +608,16 @@ export function useStationManager() {
 
         return changed ? next : prev;
       });
+
+      expiredStationIds.forEach((id) => {
+        lock(id, "expired");
+      });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [fire, logSessionHistory]);
+  }, [lock]);
 
-const extend = useCallback(async (stationId: string, extraMins: number) => {
+  const extend = useCallback(async (stationId: string, extraMins: number) => {
     const existing = sessions[stationId];
     if (!existing) return;
 
@@ -628,7 +625,6 @@ const extend = useCallback(async (stationId: string, extraMins: number) => {
     const newTotalMs = (existing.totalMs || 0) + addMs;
     const newRemainingMs = (existing.remainingMs || 0) + addMs;
 
-    // Start time aur naya end time safely calculate karo
     const startTimeMs = existing.startedAt || existing.startTime || Date.now();
     const newEndDateObj = new Date(startTimeMs + newTotalMs);
     const startDateObj = new Date(startTimeMs);
@@ -642,7 +638,6 @@ const extend = useCallback(async (stationId: string, extraMins: number) => {
     const totalMinutes = Math.round(newTotalMs / 60_000);
     const updatedDurationStr = `${totalMinutes} mins`;
 
-    // Local session state update karo
     setSessions((prev) => {
       const curr = prev[stationId];
       if (!curr) return prev;
@@ -656,7 +651,6 @@ const extend = useCallback(async (stationId: string, extraMins: number) => {
       };
     });
 
-    // 🔴 FIREBASE MEIN LIVE BOOKING KA SLOT AUR DURATION UPDATE KARO
     try {
       const liveBookingDocId = `LIVE_SESSION_${stationId}`;
       const docRef = doc(db, "bookings", liveBookingDocId);

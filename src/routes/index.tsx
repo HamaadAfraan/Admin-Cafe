@@ -138,15 +138,26 @@ function Dashboard() {
   const [cafePaymentCustomDate, setCafePaymentCustomDate] = useState("");
 
   const [showTimingModal, setShowTimingModal] = useState(false);
-  const [timingTab, setTimingTab] = useState<"regular" | "friday">("regular");
-
-  // Regular (Sat-Thu) Timings
-  const [openTimeReg, setOpenTimeReg] = useState("11:00");
-  const [closeTimeReg, setCloseTimeReg] = useState("23:00");
-
-  // Friday Timings
-  const [openTimeFri, setOpenTimeFri] = useState("14:00");
-  const [closeTimeFri, setCloseTimeFri] = useState("23:00");
+  
+  // 7 Days Timing States ("1" to "7" where 1=Mon ... 7=Sun)
+  const [dayOpenTimes, setDayOpenTimes] = useState<Record<string, string>>({
+    "1": "16:00", // Mon
+    "2": "12:30", // Tue
+    "3": "12:30", // Wed
+    "4": "12:30", // Thu
+    "5": "15:00", // Fri
+    "6": "14:30", // Sat
+    "7": "14:30", // Sun
+  });
+  const [dayCloseTimes, setDayCloseTimes] = useState<Record<string, string>>({
+    "1": "22:00",
+    "2": "22:00",
+    "3": "22:00",
+    "4": "22:00",
+    "5": "22:00",
+    "6": "22:00",
+    "7": "22:00",
+  });
 
   const [showAdminPasswordModal, setShowAdminPasswordModal] = useState(false);
   const [adminPasswordInput, setAdminPasswordInput] = useState("");
@@ -156,26 +167,27 @@ function Dashboard() {
   useEffect(() => {
     setIsMounted(true);
 
-    const fetchCafeTiming = async () => {
+    const fetchAllCafeTimings = async () => {
       try {
-        const regSnap = await getDoc(doc(db, "cafe_settings", "1"));
-        if (regSnap.exists()) {
-          const regData = regSnap.data() as any;
-          if (regData?.["open_time"]) setOpenTimeReg(regData["open_time"]);
-          if (regData?.["close_time"]) setCloseTimeReg(regData["close_time"]);
+        const newOpenTimes = { ...dayOpenTimes };
+        const newCloseTimes = { ...dayCloseTimes };
+
+        for (let i = 1; i <= 7; i++) {
+          const docSnap = await getDoc(doc(db, "cafe_settings", String(i)));
+          if (docSnap.exists()) {
+            const data = docSnap.data() as any;
+            if (data?.["open_time"]) newOpenTimes[String(i)] = data["open_time"];
+            if (data?.["close_time"]) newCloseTimes[String(i)] = data["close_time"];
+          }
         }
 
-        const friSnap = await getDoc(doc(db, "cafe_settings", "2"));
-        if (friSnap.exists()) {
-          const friData = friSnap.data() as any;
-          if (friData?.["open_time"]) setOpenTimeFri(friData["open_time"]);
-          if (friData?.["close_time"]) setCloseTimeFri(friData["close_time"]);
-        }
+        setDayOpenTimes(newOpenTimes);
+        setDayCloseTimes(newCloseTimes);
       } catch (e) {
-        console.log("Error fetching settings from Firebase:", e);
+        console.log("Error fetching 7-day settings from Firebase:", e);
       }
     };
-    fetchCafeTiming();
+    fetchAllCafeTimings();
   }, []);
 
   // Realtime listener for Cafe Direct Payments
@@ -193,26 +205,19 @@ function Dashboard() {
     return () => unsub();
   }, [isMounted]);
 
-  const handleSaveTiming = async () => {
-    const targetId = timingTab === "regular" ? "1" : "2";
-    const currentOpen = timingTab === "regular" ? openTimeReg : openTimeFri;
-    const currentClose = timingTab === "regular" ? closeTimeReg : closeTimeFri;
-
+  const handleSaveAllTimings = async () => {
     try {
-      await setDoc(doc(db, "cafe_settings", targetId), {
-        open_time: currentOpen,
-        close_time: currentClose,
-        updated_at: new Date().toISOString()
-      }, { merge: true });
-
-      if (targetId === "1" && (mgr as any).updateCafeTiming) {
-        (mgr as any).updateCafeTiming(currentOpen, currentClose);
+      for (let i = 1; i <= 7; i++) {
+        const dayKey = String(i);
+        await setDoc(doc(db, "cafe_settings", dayKey), {
+          open_time: dayOpenTimes[dayKey] || "12:30",
+          close_time: dayCloseTimes[dayKey] || "22:00"
+        }, { merge: true });
       }
+      setShowTimingModal(false);
     } catch (e) {
-      console.error("Error saving timing to Firebase:", e);
+      console.error("Error saving all timings to Firebase:", e);
     }
-
-    setShowTimingModal(false);
   };
 
   const stations = CAFE_STATIONS;
@@ -246,7 +251,6 @@ function Dashboard() {
     }).length;
   }, [mgr.bookings, isMounted]);
 
-  // Pending Cafe Direct Payments Count
   const pendingCafePaymentsCount = useMemo(() => {
     if (!isMounted) return 0;
     return cafePaymentsList.filter((p: any) => {
@@ -257,13 +261,7 @@ function Dashboard() {
 
   const stats = [
     { label: "Total", value: String(stations.length), icon: MonitorSmartphone },
-    { label: "Active", value: String(active), icon: Activity, tone: "warning" },
-    {
-      label: "Idle",
-      value: String(stations.length - active),
-      icon: CircleDot,
-      tone: "primary",
-    },
+    { label: "Idle", value: String(stations.length - active), icon: CircleDot },
   ] as const;
 
   const historyLogs: SessionRecord[] = isMounted
@@ -445,34 +443,45 @@ function Dashboard() {
           </div>
         </div>
 
-        {/* Quick Stats */}
+        {/* Quick Stats & Live Sessions Button */}
         <div className="flex items-center gap-3">
           {stats.map((s) => (
             <div
               key={s.label}
               className="flex items-center gap-2.5 rounded-lg bg-slate-950/90 px-3.5 py-1.5 border border-red-800/80 shadow-inner"
             >
-              <s.icon
-                className={cn(
-                  "size-4",
-                  !("tone" in s)
-                    ? "text-slate-400"
-                    : s.tone === "warning"
-                      ? "text-amber-400"
-                      : "text-emerald-400"
-                )}
-              />
+              <s.icon className="size-4 text-slate-400" />
               <span className="text-xs font-bold text-slate-300 uppercase">{s.label}:</span>
               <span className="font-mono text-sm font-bold text-white tabular-nums">{s.value}</span>
             </div>
           ))}
+
+          {/* Live Sessions Button with ml-auto style badge */}
           <Button
             variant="outline"
             size="sm"
-            className="border-gray-800 bg-black text-gray-300 hover:bg-gray-900 hover:text-gray-100 font-bold h-9 text-xs justify-start px-3 shadow-sm transition-all"
+            className={cn(
+              "relative border-amber-500/40 bg-amber-950/40 text-amber-200 hover:bg-amber-600 hover:text-white font-bold h-9 text-xs justify-start px-3 shadow-sm transition-all cursor-pointer",
+              active > 0 && "border-amber-400 bg-amber-600 text-white ring-2 ring-amber-400"
+            )}
+            onClick={() => setShowLiveSessionsModal(true)}
+          >
+            <Activity className="size-4 mr-2 text-amber-400 animate-pulse" />
+            Live Sessions
+            {active > 0 && (
+              <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-black text-white shadow-md">
+                {active}
+              </span>
+            )}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-gray-800 bg-black text-gray-300 hover:bg-gray-900 hover:text-gray-100 font-bold h-9 text-xs justify-start px-3 shadow-sm transition-all cursor-pointer"
             onClick={() => setShowTimingModal(true)}
           >
-            <Clock className="size-4 mr-1 text-amber-400" /> Operating Hours
+            <Clock className="size-4 mr-1 text-amber-400" /> 7-Day Hours
           </Button>
         </div>
       </header>
@@ -548,7 +557,7 @@ function Dashboard() {
             variant="outline"
             size="sm"
             className={cn(
-              "relative border-purple-400/40 bg-purple-900/40 text-purple-200 hover:bg-purple-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all",
+              "relative border-purple-400/40 bg-purple-900/40 text-purple-200 hover:bg-purple-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all cursor-pointer",
               pendingBookingsCount > 0 && "border-purple-300 bg-purple-600 text-white ring-2 ring-purple-300"
             )}
             onClick={() => setShowBookings(true)}
@@ -566,7 +575,7 @@ function Dashboard() {
             variant="outline"
             size="sm"
             className={cn(
-              "relative border-emerald-500/40 bg-emerald-950/40 text-emerald-200 hover:bg-emerald-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all",
+              "relative border-emerald-500/40 bg-emerald-950/40 text-emerald-200 hover:bg-emerald-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all cursor-pointer",
               pendingCafePaymentsCount > 0 && "border-emerald-300 bg-emerald-600 text-white ring-2 ring-emerald-300"
             )}
             onClick={() => setShowCafePaymentsModal(true)}
@@ -583,8 +592,8 @@ function Dashboard() {
             stations={stations}
             sessions={isMounted ? mgr.sessions || {} : {}}
             cafeHours={{
-              openTime: openTimeReg,
-              closeTime: closeTimeReg,
+              openTime: dayOpenTimes["6"] || "14:30",
+              closeTime: dayCloseTimes["6"] || "22:00",
             }}
           />
 
@@ -604,7 +613,7 @@ function Dashboard() {
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-7 w-7 p-0 text-slate-400 hover:text-white"
+                    className="h-7 w-7 p-0 text-slate-400 hover:text-white cursor-pointer"
                     onClick={() => setShowAdminPasswordModal(false)}
                   >
                     <X className="size-4" />
@@ -646,14 +655,14 @@ function Dashboard() {
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="text-xs text-slate-400 hover:text-white"
+                    className="text-xs text-slate-400 hover:text-white cursor-pointer"
                     onClick={() => setShowAdminPasswordModal(false)}
                   >
                     Cancel
                   </Button>
                   <Button
                     size="sm"
-                    className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs h-9 px-4"
+                    className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs h-9 px-4 cursor-pointer"
                     onClick={() => {
                       if (adminPasswordInput === "Stranger@4ever") {
                         setShowAdminPasswordModal(false);
@@ -673,39 +682,21 @@ function Dashboard() {
           <Button
             variant="outline"
             size="sm"
-            className="border-slate-800 bg-slate-950/80 text-slate-200 hover:bg-red-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all"
+            className="border-slate-800 bg-slate-950/80 text-slate-200 hover:bg-red-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all cursor-pointer"
             onClick={() => setShowRecords(true)}
           >
             <FileText className="size-4 mr-2.5 text-red-400" /> Detailed Records
           </Button>
 
-          <Button
-            variant="outline"
-            size="sm"
-            className={cn(
-              "relative border-amber-500/40 bg-amber-950/40 text-amber-200 hover:bg-amber-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all",
-              active > 0 && "border-amber-400 bg-amber-600 text-white ring-2 ring-amber-400"
-            )}
-            onClick={() => setShowLiveSessionsModal(true)}
-          >
-            <Activity className="size-4 mr-2.5 text-amber-400 animate-pulse" />
-            Live Running Sessions
-            {active > 0 && (
-              <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-black text-white shadow-md">
-                {active}
-              </span>
-            )}
-          </Button>
-
           {/* Live Sessions Management Modal */}
-      <LiveSessionsModal
-        open={showLiveSessionsModal}
-        onOpenChange={setShowLiveSessionsModal}
-        sessions={mgr.sessions}
-        onLockSession={(stationId) => mgr.forceLock(stationId)}
-        onTogglePause={(stationId) => mgr.togglePause(stationId)}
-        onExtendSession={(stationId, mins) => mgr.extend(stationId, mins)}
-      />
+          <LiveSessionsModal
+            open={showLiveSessionsModal}
+            onOpenChange={setShowLiveSessionsModal}
+            sessions={mgr.sessions}
+            onLockSession={(stationId) => mgr.forceLock(stationId)}
+            onTogglePause={(stationId) => mgr.togglePause(stationId)}
+            onExtendSession={(stationId, mins) => mgr.extend(stationId, mins)}
+          />
 
           <div className="border-t border-slate-800 my-1"></div>
           <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-1">
@@ -714,7 +705,7 @@ function Dashboard() {
           <Button
             variant="outline"
             size="sm"
-            className="border-purple-500/40 bg-purple-950/40 text-purple-200 hover:bg-purple-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all"
+            className="border-purple-500/40 bg-purple-950/40 text-purple-200 hover:bg-purple-600 hover:text-white font-bold h-11 text-xs justify-start px-3 shadow-sm transition-all cursor-pointer"
             onClick={() => {
               setAdminPasswordInput("");
               setPasswordError(false);
@@ -1052,21 +1043,21 @@ function Dashboard() {
         onOpenChange={setShowUserProfiles}
       />
 
-      {/* Dynamic Cafe Timings Modal */}
+      {/* All 7-Days Cafe Timings Modal */}
       {showTimingModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
-          <div className="relative w-full max-w-md flex flex-col rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="relative w-full max-w-lg max-h-[85vh] flex flex-col rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="grid size-9 place-items-center rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-400">
                   <Clock className="size-5" />
                 </div>
                 <div>
                   <h2 className="text-base font-bold text-white tracking-wide">
-                    Cafe Operating Hours
+                    7-Day Operating Hours Management
                   </h2>
                   <p className="text-[11px] text-slate-400">
-                    Set separate hours for Friday & Regular days
+                    Set opening and closing times for all days and save at once
                   </p>
                 </div>
               </div>
@@ -1074,60 +1065,55 @@ function Dashboard() {
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-8 w-8 p-0 text-slate-400 hover:text-white"
+                className="h-8 w-8 p-0 text-slate-400 hover:text-white cursor-pointer"
                 onClick={() => setShowTimingModal(false)}
               >
                 <X className="size-5" />
               </Button>
             </div>
 
-            {/* Tab Switcher */}
-            <div className="grid grid-cols-2 gap-2 my-4 bg-slate-950 p-1 rounded-lg border border-slate-800">
-              <Button
-                size="sm"
-                variant={timingTab === "regular" ? "default" : "ghost"}
-                className={`text-xs font-bold cursor-pointer ${timingTab === "regular" ? "bg-amber-600 text-white hover:bg-amber-500" : "text-slate-400 hover:text-white"}`}
-                onClick={() => setTimingTab("regular")}
-              >
-                Saturday – Thursday
-              </Button>
-              <Button
-                size="sm"
-                variant={timingTab === "friday" ? "default" : "ghost"}
-                className={`text-xs font-bold cursor-pointer ${timingTab === "friday" ? "bg-amber-600 text-white hover:bg-amber-500" : "text-slate-400 hover:text-white"}`}
-                onClick={() => setTimingTab("friday")}
-              >
-                Friday (Special)
-              </Button>
+            {/* Scrollable list for Monday to Sunday */}
+            <div className="flex-1 overflow-y-auto pr-1 my-3 space-y-3">
+              {[
+                { id: "1", label: "Monday" },
+                { id: "2", label: "Tuesday" },
+                { id: "3", label: "Wednesday" },
+                { id: "4", label: "Thursday" },
+                { id: "5", label: "Friday" },
+                { id: "6", label: "Saturday" },
+                { id: "7", label: "Sunday" },
+              ].map((day) => (
+                <div key={day.id} className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <span className="text-xs font-bold font-mono text-amber-400 w-28 uppercase">
+                    {day.label}
+                  </span>
+                  
+                  <div className="flex items-center gap-2 flex-1">
+                    <div className="flex-1">
+                      <label className="text-[10px] text-slate-400 block mb-1">Open Time</label>
+                      <Input
+                        type="time"
+                        value={dayOpenTimes[day.id] || "12:30"}
+                        onChange={(e) => setDayOpenTimes({ ...dayOpenTimes, [day.id]: e.target.value })}
+                        className="bg-slate-900 border-slate-800 text-white focus:border-amber-500 h-9 text-xs font-mono"
+                      />
+                    </div>
+
+                    <div className="flex-1">
+                      <label className="text-[10px] text-slate-400 block mb-1">Close Time</label>
+                      <Input
+                        type="time"
+                        value={dayCloseTimes[day.id] || "22:00"}
+                        onChange={(e) => setDayCloseTimes({ ...dayCloseTimes, [day.id]: e.target.value })}
+                        className="bg-slate-900 border-slate-800 text-white focus:border-amber-500 h-9 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
 
-            <div className="space-y-4 mb-4">
-              <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
-                  {timingTab === "regular" ? "Saturday - Thursday Opening Time" : "Friday Opening Time"}
-                </label>
-                <Input
-                  type="time"
-                  value={timingTab === "regular" ? openTimeReg : openTimeFri}
-                  onChange={(e) => timingTab === "regular" ? setOpenTimeReg(e.target.value) : setOpenTimeFri(e.target.value)}
-                  className="bg-slate-950 border-slate-800 text-white focus:border-amber-500 h-10 text-sm font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
-                  {timingTab === "regular" ? "Saturday - Thursday Closing Time" : "Friday Closing Time"}
-                </label>
-                <Input
-                  type="time"
-                  value={timingTab === "regular" ? closeTimeReg : closeTimeFri}
-                  onChange={(e) => timingTab === "regular" ? setCloseTimeReg(e.target.value) : setCloseTimeFri(e.target.value)}
-                  className="bg-slate-950 border-slate-800 text-white focus:border-amber-500 h-10 text-sm font-mono"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800 shrink-0">
               <Button
                 size="sm"
                 variant="ghost"
@@ -1138,10 +1124,10 @@ function Dashboard() {
               </Button>
               <Button
                 size="sm"
-                className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs h-9 px-4 shadow-md cursor-pointer"
-                onClick={handleSaveTiming}
+                className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs h-9 px-5 shadow-md cursor-pointer"
+                onClick={handleSaveAllTimings}
               >
-                <Save className="size-3.5 mr-1.5" /> Save {timingTab === "regular" ? "Regular" : "Friday"} Hours
+                <Save className="size-3.5 mr-1.5" /> Save All Operating Hours
               </Button>
             </div>
           </div>

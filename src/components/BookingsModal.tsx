@@ -11,11 +11,11 @@ import {
   Tag,
   Trash2,
   Calendar,
-  Eraser,
   RefreshCw,
   Eye,
   Receipt,
-  IndianRupee
+  IndianRupee,
+  BellRing
 } from "lucide-react";
 import {
   Dialog,
@@ -274,10 +274,12 @@ export function BookingsModal({
   onClearOldRecords
 }: Props) {
   const [localBookings, setLocalBookings] = useState<BookingRequest[]>([]);
-  const [filter, setFilter] = useState<"ALL" | "TODAY" | "TOMORROW" | "PENDING" | "APPROVED" | "REJECTED" | "PAST">("ALL");
+  // By default filter "TODAY" par set kiya gaya hai taaki pehle wahi dikhe
+  const [filter, setFilter] = useState<"ALL" | "TODAY" | "TOMORROW" | "PENDING" | "APPROVED" | "REJECTED" | "PAST">("TODAY");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState<BookingRequest | null>(null);
+  const [, setTick] = useState(0);
 
   const syncBookingsData = async () => {
     setLoading(true);
@@ -306,14 +308,20 @@ export function BookingsModal({
   useEffect(() => {
     if (!open) return;
 
+    setFilter("TODAY");
     syncBookingsData();
 
     const unsubscribe = onSnapshot(collection(db, "bookings"), () => {
       syncBookingsData();
     });
 
+    const interval = setInterval(() => {
+      setTick((t) => t + 1);
+    }, 30000);
+
     return () => {
       unsubscribe();
+      clearInterval(interval);
     };
   }, [open]);
 
@@ -429,47 +437,33 @@ export function BookingsModal({
     syncBookingsData();
   };
 
-  const handleClearCompleted = async () => {
-    const idsToDelete: string[] = [];
-
-    localBookings.forEach((b) => {
-      const st = String(b.status).toUpperCase();
-      if (st === "REJECTED") {
-        idsToDelete.push(b.id);
-      } else if (st === "APPROVED" || st === "CONFIRMED" || isWalkInBooking(b)) {
-        if (isBookingSlotExpired(b)) {
-          idsToDelete.push(b.id);
-        }
-      }
-    });
-
-    if (idsToDelete.length > 0) {
-      try {
-        for (const id of idsToDelete) {
-          await deleteDoc(doc(db, "bookings", id));
-        }
-      } catch (e) {
-        console.error("Failed bulk deletion in Firebase:", e);
-      }
-    }
-
-    if (onClearOldRecords) onClearOldRecords();
-    syncBookingsData();
-  };
-
   const safeBookings = Array.isArray(localBookings) ? localBookings : [];
+  const todayStr = formatDateToReadable(new Date());
+
+  // Sirf aaj ki wahi bookings jo abhi tak expired nahi hui hain, unhi ki notifications dikhengi
+  const activeTodayNotifications = safeBookings.filter((b) => {
+    if (!b) return false;
+    const bId = String(b.id || "").toUpperCase();
+    if (bId.startsWith("LIVE_SESSION_")) return false;
+
+    const bDateNormalized = extractBookingDay(b);
+    if (bDateNormalized !== todayStr) return false;
+
+    const effectiveStatus = isWalkInBooking(b) ? "APPROVED" : String(b.status).toUpperCase();
+    if (effectiveStatus === "REJECTED") return false;
+
+    return !isBookingSlotExpired(b);
+  });
 
   const filteredBookings = safeBookings.filter((b) => {
     if (!b) return false;
 
-    // 🛑 Live sessions ko bookings modal se hide karne ke liye check:
     const bId = String(b.id || "").toUpperCase();
     if (bId.startsWith("LIVE_SESSION_")) return false;
 
     let matchesFilter = true;
 
     const bDateNormalized = extractBookingDay(b);
-    const todayStr = formatDateToReadable(new Date());
 
     const tom = new Date();
     tom.setDate(tom.getDate() + 1);
@@ -504,7 +498,6 @@ export function BookingsModal({
     return matchesFilter && matchesSearch;
   });
 
-  // Helper function to calculate sorting timestamp based on Booking Date & Slot Start Time
   const getBookingSortTimestamp = (b: BookingRequest): number => {
     try {
       const formattedDay = extractBookingDay(b);
@@ -544,13 +537,12 @@ export function BookingsModal({
     }
   };
 
-  // Sort Bookings: Latest Date & Slot Time at TOP, Older Slots/Dates at BOTTOM
   const sortedBookings = [...filteredBookings].sort((a, b) => {
     const sortTimeA = getBookingSortTimestamp(a);
     const sortTimeB = getBookingSortTimestamp(b);
 
     if (sortTimeA !== sortTimeB) {
-      return sortTimeB - sortTimeA; // Latest date/slot first
+      return sortTimeB - sortTimeA;
     }
 
     return String(b.id || "").localeCompare(String(a.id || ""));
@@ -590,7 +582,43 @@ export function BookingsModal({
             </div>
           </DialogHeader>
 
-          {/* Filter Bar */}
+          {/* Today's Active Bookings Notification Banner */}
+          {activeTodayNotifications.length > 0 && (
+            <div className="mt-3 p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5 uppercase tracking-wider">
+                  <BellRing className="size-4 text-amber-400 animate-bounce" />
+                  Today's Active Sessions ({activeTodayNotifications.length})
+                </span>
+                <span className="text-[10px] font-mono text-amber-400/85 font-semibold">
+                  Active until slot end time
+                </span>
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+                {activeTodayNotifications.map((notif) => {
+                  const cust = notif.customer_name || notif.name || notif.customer || "Customer";
+                  const st = notif.station_id || notif.platform || notif.category || "";
+                  const scr = notif.screen ? ` (${notif.screen})` : "";
+                  const slt = (notif.slot_time || notif.slot || "").replace("\n", " - ");
+
+                  return (
+                    <div
+                      key={`notif-${notif.id}`}
+                      onClick={() => setSelectedBooking(notif)}
+                      className="shrink-0 px-3 py-1.5 rounded-lg bg-slate-900/90 border border-amber-500/30 hover:border-amber-400 cursor-pointer flex items-center gap-2 text-xs transition-all"
+                    >
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                      <span className="font-bold text-white">{cust}</span>
+                      <span className="text-amber-300 font-semibold">• {st}{scr}</span>
+                      <span className="text-cyan-300 font-mono text-[11px]">({slt})</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Filter Bar (Original positions maintained: ALL, TODAY, TOMORROW, PENDING, APPROVED, REJECTED, PAST) */}
           <div className="flex flex-col sm:flex-row gap-3 py-3 border-b border-slate-800">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-2.5 size-4 text-slate-400" />
@@ -691,7 +719,7 @@ export function BookingsModal({
                         <div className="flex items-center gap-3 text-xs text-slate-400">
                           <span className="flex items-center gap-1 font-semibold text-amber-300">
                             <Gamepad2 className="size-3.5 text-amber-400" />
-                            {displayStation}
+                            {displayStation} {b.selectedGame ? `• ${b.selectedGame}` : ""}
                           </span>
                           <span>•</span>
                           <span className="flex items-center gap-1 text-cyan-300 font-medium">
@@ -741,7 +769,6 @@ export function BookingsModal({
                         </>
                       )}
 
-                      {/* 🛑 Sirf expired ya rejected bookings ko hi delete karne ka option do, chalte hue ya active ko nahi! */}
                       {(!isWalkIn && (statusStr === "REJECTED" || isExpired)) && (
                         <Button
                           size="icon"
@@ -825,6 +852,15 @@ export function BookingsModal({
                 <span className="font-bold text-amber-300">
                   {selectedBooking.station_id || selectedBooking.stationId || selectedBooking.platform || selectedBooking.category || "N/A"}
                   {selectedBooking.screen ? ` (${selectedBooking.screen})` : ""}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center py-1.5 border-b border-slate-800/80">
+                <span className="text-slate-400 flex items-center gap-1.5">
+                  <Tag className="size-3.5 text-purple-400" /> Game / Edition:
+                </span>
+                <span className="font-bold text-[#ccff00] font-mono">
+                  {selectedBooking.selectedGame || "Standard"}
                 </span>
               </div>
 

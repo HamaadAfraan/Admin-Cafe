@@ -28,14 +28,15 @@ LAST_REQUEST_TIMES = {}
 
 PC_STATES = {
     "PC-1": "LOCKED",
-    "PC-2": "LOCKED"
+    "PC-2": "LOCKED",
+    "TRUCK": "LOCKED"
 }
 
 # --- Specific SSH Scheduled Task Lock Mapping ---
 PC_SSH_CONFIGS = {
-    "192.168.1.50": 'ssh -o BatchMode=yes stranger-main@192.168.1.50 "schtasks /run /tn LockStrangerMain"',
-    "192.168.1.51": 'ssh -o BatchMode=yes stranger@192.168.1.51 "schtasks /run /tn LockMyPC"',
-    "192.168.1.53": 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "truck simulator"@192.168.1.53 "schtasks /run /tn LockTruckSimulator"'
+    "192.168.1.50": 'sshpass -p \'3313\' ssh Stranger@192.168.1.50 "psexec -accepteula -s -i 1 -d C:\\Windows\\System32\\rundll32.exe user32.dll,LockWorkStation"',
+    "192.168.1.51": 'sshpass -p \'3313\' ssh Stranger@192.168.1.51 "schtasks /run /tn LockMyPC"',
+    "TRUCK": 'sshpass -p \'3313\' ssh Stranger@192.168.1.50 "psexec -accepteula -s -i 2 -d C:\\Windows\\System32\\rundll32.exe user32.dll,LockWorkStation"'
 }
 
 def get_local_ip():
@@ -49,17 +50,20 @@ def get_local_ip():
         return "127.0.0.1"
 
 # --- SSH / Remote PC Lock Execution Helper ---
-def execute_pc_command(ip, action):
-    if not ip:
-        return
-    
+def execute_pc_command(ip, action, station_id=""):
     def _pc_task():
         try:
-            logging.info(f"[PC CONTROL] Target IP: {ip} | Action: {action}")
+            logging.info(f"[PC CONTROL] Station: {station_id} | Target IP: {ip} | Action: {action}")
             if action in ["LOCK", "EXPIRE", "STOP", "SESSION_EXPIRE", "EXPIRE_LOCK", "END", "POWER_OFF"]:
-                cmd = PC_SSH_CONFIGS.get(ip)
+                # Check mapping by station name first if it's Truck, else by IP
+                cmd = None
+                if "TRUCK" in station_id.upper():
+                    cmd = PC_SSH_CONFIGS.get("TRUCK")
+                else:
+                    cmd = PC_SSH_CONFIGS.get(ip)
+
                 if cmd:
-                    subprocess.run(cmd, shell=True, capture_output=True, timeout=3)
+                    subprocess.run(cmd, shell=True, capture_output=True, timeout=5)
                 else:
                     if ip in ["127.0.0.1", "localhost", get_local_ip()]:
                         if platform.system() == "Windows":
@@ -129,11 +133,8 @@ def apply_hide(ip):
     if not ip: return
 
     def _hide_task():
-        # Wake up screen instantly
         run_adb(ip, ["shell", "input", "keyevent", "224"], fast=True)
         tv_sdcard_dir = "/sdcard/hide.jpeg"
-        
-        # Open hide image directly from TV storage[cite: 1]
         intent_cmd = ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", f"file://{tv_sdcard_dir}", "-t", "image/*", "--grant-read-uri-permission", "-f", "0x10000000"]
         run_adb(ip, intent_cmd, fast=True)
 
@@ -220,11 +221,11 @@ def handle_control():
     if "PC" in station_id or "TRUCK" in station_id or ip in PC_SSH_CONFIGS:
         if action in ["START", "PLAY", "RESUME", "INIT", "UNLOCK", "POWER_ON"]:
             PC_STATES[station_id] = "UNLOCKED"
-            execute_pc_command(ip, "UNLOCK")
+            # Optional unlock behavior if needed, currently bypasses or handles lock
             return jsonify({"status": "success", "message": f"{station_id} UNLOCKED"}), 200
         elif action in ["LOCK", "EXPIRE", "SESSION_EXPIRE", "EXPIRE_LOCK", "STOP", "END", "POWER_OFF"]:
             PC_STATES[station_id] = "LOCKED"
-            execute_pc_command(ip, "LOCK")
+            execute_pc_command(ip, "LOCK", station_id=station_id)
             return jsonify({"status": "success", "message": f"{station_id} LOCKED"}), 200
 
     # Handle ADB / TV Control
@@ -261,7 +262,7 @@ if __name__ == '__main__':
     print(f" * Server Host Port: {port}")
     print(f" * Server Local IP: http://{local_ip}:{port}")
     print("==================================================")
-    
+   
     try:
         from waitress import serve
         serve(app, host='0.0.0.0', port=port, threads=8)

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   CalendarClock,
   CheckCircle2,
@@ -15,7 +15,8 @@ import {
   Eye,
   Receipt,
   IndianRupee,
-  BellRing
+  BellRing,
+  Monitor
 } from "lucide-react";
 import {
   Dialog,
@@ -255,6 +256,18 @@ const isWalkInBooking = (b: BookingRequest): boolean => {
   );
 };
 
+const getConsoleLabel = (b: BookingRequest): string => {
+  const station = (b.station_id || b.stationId || b.platform || b.category || "").trim();
+  const screen = (b.screen || "").trim();
+  if (!station) return "Other";
+  return screen ? `${station} (${screen})` : station;
+};
+
+const getGameLabel = (b: BookingRequest): string => {
+  const game = (b.selectedGame || "").trim();
+  return game || "Standard";
+};
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -270,12 +283,12 @@ export function BookingsModal({
   onOpenChange,
   onApprove,
   onReject,
-  onDeleteBooking,
-  onClearOldRecords
+  onDeleteBooking
 }: Props) {
   const [localBookings, setLocalBookings] = useState<BookingRequest[]>([]);
-  // By default filter "TODAY" par set kiya gaya hai taaki pehle wahi dikhe
   const [filter, setFilter] = useState<"ALL" | "TODAY" | "TOMORROW" | "PENDING" | "APPROVED" | "REJECTED" | "PAST">("TODAY");
+  const [consoleFilter, setConsoleFilter] = useState<string>("ALL");
+  const [gameFilter, setGameFilter] = useState<string>("ALL");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState<BookingRequest | null>(null);
@@ -309,6 +322,8 @@ export function BookingsModal({
     if (!open) return;
 
     setFilter("TODAY");
+    setConsoleFilter("ALL");
+    setGameFilter("ALL");
     syncBookingsData();
 
     const unsubscribe = onSnapshot(collection(db, "bookings"), () => {
@@ -437,15 +452,44 @@ export function BookingsModal({
     syncBookingsData();
   };
 
-  const safeBookings = Array.isArray(localBookings) ? localBookings : [];
+  const safeBookings = useMemo(() => {
+    return (Array.isArray(localBookings) ? localBookings : []).filter(
+      (b) => b && !String(b.id || "").toUpperCase().startsWith("LIVE_SESSION_")
+    );
+  }, [localBookings]);
+
+  // Pre-defined mandatory Console tabs + any other dynamically found ones
+  const availableConsoles = useMemo(() => {
+    const defaultConsoles = [
+      'PS5 (43" Standard)',
+      'PS5 (55" 4K)',
+      'PS4',
+      'Racing Simulator',
+      'Truck Simulator',
+      'Gaming PC'
+    ];
+    const set = new Set<string>(defaultConsoles);
+    safeBookings.forEach((b) => {
+      const label = getConsoleLabel(b);
+      if (label && label !== "Other") set.add(label);
+    });
+    return ["ALL", ...Array.from(set)];
+  }, [safeBookings]);
+
+  // Pre-defined mandatory Game tabs + any other dynamically found ones
+  const availableGames = useMemo(() => {
+    const defaultGames = ['GTA 6', 'Standard'];
+    const set = new Set<string>(defaultGames);
+    safeBookings.forEach((b) => {
+      const gLabel = getGameLabel(b);
+      if (gLabel) set.add(gLabel);
+    });
+    return ["ALL", ...Array.from(set)];
+  }, [safeBookings]);
+
   const todayStr = formatDateToReadable(new Date());
 
-  // Sirf aaj ki wahi bookings jo abhi tak expired nahi hui hain, unhi ki notifications dikhengi
   const activeTodayNotifications = safeBookings.filter((b) => {
-    if (!b) return false;
-    const bId = String(b.id || "").toUpperCase();
-    if (bId.startsWith("LIVE_SESSION_")) return false;
-
     const bDateNormalized = extractBookingDay(b);
     if (bDateNormalized !== todayStr) return false;
 
@@ -456,11 +500,6 @@ export function BookingsModal({
   });
 
   const filteredBookings = safeBookings.filter((b) => {
-    if (!b) return false;
-
-    const bId = String(b.id || "").toUpperCase();
-    if (bId.startsWith("LIVE_SESSION_")) return false;
-
     let matchesFilter = true;
 
     const bDateNormalized = extractBookingDay(b);
@@ -482,6 +521,20 @@ export function BookingsModal({
       matchesFilter = effectiveStatus === filter;
     }
 
+    // Console / Platform match (flexible partial checking for 43", 55", ps4, sim, truck, pc)
+    const bConsole = getConsoleLabel(b).toLowerCase();
+    const matchesConsole =
+      consoleFilter === "ALL" ||
+      bConsole.includes(consoleFilter.toLowerCase()) ||
+      consoleFilter.toLowerCase().includes(bConsole);
+
+    // Game / Edition match
+    const bGame = getGameLabel(b).toLowerCase();
+    const matchesGame =
+      gameFilter === "ALL" ||
+      bGame.includes(gameFilter.toLowerCase()) ||
+      gameFilter.toLowerCase().includes(bGame);
+
     const name = b.customer_name || b.name || b.customer || "";
     const station = b.station_id || b.platform || b.category || "";
     const searchLower = search.toLowerCase();
@@ -493,9 +546,10 @@ export function BookingsModal({
       utrStr.includes(searchLower) ||
       station.toLowerCase().includes(searchLower) ||
       (b.id && String(b.id).toLowerCase().includes(searchLower)) ||
-      bDateNormalized.toLowerCase().includes(searchLower);
+      bDateNormalized.toLowerCase().includes(searchLower) ||
+      bGame.includes(searchLower);
 
-    return matchesFilter && matchesSearch;
+    return matchesFilter && matchesConsole && matchesGame && matchesSearch;
   });
 
   const getBookingSortTimestamp = (b: BookingRequest): number => {
@@ -542,21 +596,32 @@ export function BookingsModal({
     const sortTimeB = getBookingSortTimestamp(b);
 
     if (sortTimeA !== sortTimeB) {
-      return sortTimeB - sortTimeA;
+      return sortTimeA - sortTimeB; // 👈 Pehle wala time upar (Ascending order)
     }
 
-    return String(b.id || "").localeCompare(String(a.id || ""));
+    return String(a.id || "").localeCompare(String(b.id || ""));
   });
 
-  const pendingCount = safeBookings.filter((b) => {
+const pendingCount = safeBookings.filter((b) => {
     if (isWalkInBooking(b)) return false;
     return String(b?.status).toUpperCase() === "PENDING";
+  }).length;
+
+  // 🟢 Aaj ki bachi hui active/upcoming bookings ka count (Expired exclude ho jayengi)
+  const todayActiveCount = safeBookings.filter((b) => {
+    const bDateNormalized = extractBookingDay(b);
+    if (bDateNormalized !== todayStr) return false;
+
+    const effectiveStatus = isWalkInBooking(b) ? "APPROVED" : String(b.status).toUpperCase();
+    if (effectiveStatus === "REJECTED") return false;
+
+    return !isBookingSlotExpired(b);
   }).length;
 
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-4xl bg-slate-950 text-white border-slate-800 max-h-[85vh] flex flex-col p-6">
+        <DialogContent className="max-w-4xl bg-slate-950 text-white border-slate-800 max-h-[88vh] flex flex-col p-6">
           <DialogHeader className="border-b border-slate-800 pb-4">
             <div className="flex items-center justify-between">
               <DialogTitle className="flex items-center gap-2 font-display text-xl font-black text-amber-400">
@@ -570,6 +635,21 @@ export function BookingsModal({
               </DialogTitle>
 
               <div className="flex items-center gap-2">
+                {(consoleFilter !== "ALL" || gameFilter !== "ALL" || filter !== "TODAY" || search !== "") && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-amber-400 hover:text-amber-300 hover:bg-amber-950/40 text-xs cursor-pointer"
+                    onClick={() => {
+                      setFilter("TODAY");
+                      setConsoleFilter("ALL");
+                      setGameFilter("ALL");
+                      setSearch("");
+                    }}
+                  >
+                    Reset Filters
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   variant="outline"
@@ -618,48 +698,97 @@ export function BookingsModal({
             </div>
           )}
 
-          {/* Filter Bar (Original positions maintained: ALL, TODAY, TOMORROW, PENDING, APPROVED, REJECTED, PAST) */}
-          <div className="flex flex-col sm:flex-row gap-3 py-3 border-b border-slate-800">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-2.5 size-4 text-slate-400" />
-              <Input
-                placeholder="Search by name, phone, UTR, date..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9 bg-slate-900 border-slate-700 text-xs text-white placeholder:text-slate-500"
-              />
+          {/* Multi-Dimensional Filter Section */}
+          <div className="space-y-2.5 py-3 border-b border-slate-800">
+            {/* Row 1: Search & Days/Status Tabs */}
+            <div className="flex flex-col sm:flex-row gap-2.5">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-2.5 size-4 text-slate-400" />
+                <Input
+                  placeholder="Search by name, phone, UTR, date, game..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-9 bg-slate-900 border-slate-700 text-xs text-white placeholder:text-slate-500 h-9"
+                />
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {(["ALL", "TODAY", "TOMORROW", "PENDING", "APPROVED", "REJECTED", "PAST"] as const).map((st) => (
+                  <Button
+                    key={st}
+                    size="sm"
+                    variant={filter === st ? "default" : "outline"}
+                    className={`text-[11px] font-bold cursor-pointer h-8 px-2.5 ${filter === st
+                      ? st === "PAST" ? "bg-slate-700 text-white hover:bg-slate-600" : "bg-amber-500 text-black hover:bg-amber-400"
+                      : "bg-slate-900 border-slate-700 text-slate-300"
+                      }`}
+                    onClick={() => setFilter(st)}
+                  >
+                    {st}
+                  </Button>
+                ))}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {(["ALL", "TODAY", "TOMORROW", "PENDING", "APPROVED", "REJECTED", "PAST"] as const).map((st) => (
-                <Button
-                  key={st}
-                  size="sm"
-                  variant={filter === st ? "default" : "outline"}
-                  className={`text-xs font-bold cursor-pointer ${filter === st
-                    ? st === "PAST" ? "bg-slate-700 text-white hover:bg-slate-600" : "bg-amber-500 text-black hover:bg-amber-400"
-                    : "bg-slate-900 border-slate-700 text-slate-300"
-                    }`}
-                  onClick={() => setFilter(st)}
-                >
-                  {st}
-                </Button>
-              ))}
-            </div>
+
+            {/* Row 2: Console / Screen Filter Tabs */}
+            {availableConsoles.length > 1 && (
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1 shrink-0 mr-1">
+                  <Monitor className="size-3 text-cyan-400" /> Console:
+                </span>
+                {availableConsoles.map((cLabel) => (
+                  <Button
+                    key={`console-${cLabel}`}
+                    size="sm"
+                    variant={consoleFilter === cLabel ? "default" : "outline"}
+                    className={`text-[11px] font-semibold cursor-pointer h-7 px-2.5 shrink-0 ${consoleFilter === cLabel
+                      ? "bg-cyan-500 text-black hover:bg-cyan-400 font-bold"
+                      : "bg-slate-900/90 border-slate-700/80 text-slate-300 hover:border-cyan-500/50"
+                      }`}
+                    onClick={() => setConsoleFilter(cLabel)}
+                  >
+                    {cLabel === "ALL" ? "All Consoles" : cLabel}
+                  </Button>
+                ))}
+              </div>
+            )}
+
+            {/* Row 3: Game / Edition Filter Tabs */}
+            {availableGames.length > 1 && (
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1 shrink-0 mr-1">
+                  <Gamepad2 className="size-3 text-[#ccff00]" /> Game:
+                </span>
+                {availableGames.map((gLabel) => (
+                  <Button
+                    key={`game-${gLabel}`}
+                    size="sm"
+                    variant={gameFilter === gLabel ? "default" : "outline"}
+                    className={`text-[11px] font-semibold cursor-pointer h-7 px-2.5 shrink-0 ${gameFilter === gLabel
+                      ? "bg-[#ccff00] text-black hover:bg-[#b8e600] font-bold"
+                      : "bg-slate-900/90 border-slate-700/80 text-slate-300 hover:border-[#ccff00]/50"
+                      }`}
+                    onClick={() => setGameFilter(gLabel)}
+                  >
+                    {gLabel === "ALL" ? "All Games" : gLabel}
+                  </Button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Bookings List */}
           <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 py-2">
             {sortedBookings.length === 0 ? (
               <div className="text-center py-12 text-slate-500 text-sm">
-                No booking records found.
+                No booking records match the selected filters.
               </div>
             ) : (
               sortedBookings.map((b, index) => {
                 const isWalkIn = isWalkInBooking(b);
                 const statusStr = isWalkIn ? "APPROVED" : String(b.status).toUpperCase();
                 const displaySlot = b.slot_time || b.slot || b.time_slot || b.timeSlot || "Immediate";
-                const station = b.station_id || b.stationId || b.platform || b.category || "";
-                const displayStation = b.screen ? `${station} (${b.screen})` : station;
+                const displayStation = getConsoleLabel(b);
+                const displayGame = getGameLabel(b);
                 const customerName = b.customer_name || b.name || b.customer || (isWalkIn ? "Walk-In Customer" : "Customer");
                 const bookingDay = extractBookingDay(b);
                 const isExpired = (statusStr === "APPROVED" || statusStr === "CONFIRMED") && isBookingSlotExpired(b);
@@ -716,10 +845,14 @@ export function BookingsModal({
                           </span>
                         </div>
 
-                        <div className="flex items-center gap-3 text-xs text-slate-400">
+                        <div className="flex items-center gap-3 text-xs text-slate-400 flex-wrap">
                           <span className="flex items-center gap-1 font-semibold text-amber-300">
                             <Gamepad2 className="size-3.5 text-amber-400" />
-                            {displayStation} {b.selectedGame ? `• ${b.selectedGame}` : ""}
+                            {displayStation}
+                          </span>
+                          <span>•</span>
+                          <span className="font-mono font-bold text-[#ccff00]">
+                            {displayGame}
                           </span>
                           <span>•</span>
                           <span className="flex items-center gap-1 text-cyan-300 font-medium">
@@ -850,8 +983,7 @@ export function BookingsModal({
                   <Gamepad2 className="size-3.5 text-amber-400" /> Station / Platform:
                 </span>
                 <span className="font-bold text-amber-300">
-                  {selectedBooking.station_id || selectedBooking.stationId || selectedBooking.platform || selectedBooking.category || "N/A"}
-                  {selectedBooking.screen ? ` (${selectedBooking.screen})` : ""}
+                  {getConsoleLabel(selectedBooking)}
                 </span>
               </div>
 
@@ -860,7 +992,7 @@ export function BookingsModal({
                   <Tag className="size-3.5 text-purple-400" /> Game / Edition:
                 </span>
                 <span className="font-bold text-[#ccff00] font-mono">
-                  {selectedBooking.selectedGame || "Standard"}
+                  {getGameLabel(selectedBooking)}
                 </span>
               </div>
 
@@ -919,16 +1051,28 @@ export function BookingsModal({
               </>
             )}
 
-            <Button
-              variant="destructive"
-              className="bg-red-950 hover:bg-red-900 border border-red-500/40 text-red-300 text-xs font-bold"
-              onClick={() => selectedBooking && handleDelete(selectedBooking.id)}
-            >
-              <Trash2 className="size-4" />
-            </Button>
+            {selectedBooking && (() => {
+              const isWalkIn = isWalkInBooking(selectedBooking);
+              const statusStr = isWalkIn ? "APPROVED" : String(selectedBooking.status).toUpperCase();
+              const isExpired = (statusStr === "APPROVED" || statusStr === "CONFIRMED") && isBookingSlotExpired(selectedBooking);
+
+              if (!isWalkIn && (statusStr === "REJECTED" || isExpired)) {
+                return (
+                  <Button
+                    variant="destructive"
+                    className="bg-red-950 hover:bg-red-900 border border-red-500/40 text-red-300 text-xs font-bold px-3 cursor-pointer"
+                    onClick={() => handleDelete(selectedBooking.id)}
+                    title="Delete Record"
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                );
+              }
+              return null;
+            })()}
 
             <Button
-              className="bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 flex-1"
+              className="bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 flex-1 cursor-pointer"
               onClick={() => setSelectedBooking(null)}
             >
               CLOSE

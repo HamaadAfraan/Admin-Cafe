@@ -235,7 +235,7 @@ function Dashboard() {
 
   const active = isMounted ? Object.keys(mgr.sessions || {}).length : 0;
 
-  const pendingBookingsCount = useMemo(() => {
+const pendingBookingsCount = useMemo(() => {
     if (!isMounted) return 0;
     const list = Array.isArray(mgr.bookings) ? mgr.bookings : [];
     return list.filter((b) => {
@@ -248,6 +248,73 @@ function Dashboard() {
       const isNotSettings = bId !== "CAFE_OPERATING_HOURS" && !custName.includes("cafe_operating_hours");
 
       return isPending && isNotAdminBlock && isNotSettings;
+    }).length;
+  }, [mgr.bookings, isMounted]);
+
+  // 🟢 Aaj ki active/upcoming bookings ka live count (expired exclude ho jayengi)
+  const todayActiveCount = useMemo(() => {
+    if (!isMounted) return 0;
+    const list = Array.isArray(mgr.bookings) ? mgr.bookings : [];
+    
+    const formatDateToReadable = (d) => {
+      const day = String(d.getDate()).padStart(2, '0');
+      const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
+      return `${day}-${monthNames[d.getMonth()]}-${d.getFullYear()}`;
+    };
+
+    const todayStr = formatDateToReadable(new Date());
+
+    return list.filter((b) => {
+      if (!b) return false;
+      const bId = String(b.id || "").toUpperCase();
+      if (bId.startsWith("LIVE_SESSION_") || bId === "CAFE_OPERATING_HOURS") return false;
+
+      // Extract Date
+      const possibleVal = b.bookingDate || b.booking_date || b.bookingdate || b.date || b.day;
+      let bDateNormalized = todayStr;
+      if (possibleVal && typeof possibleVal === 'string') {
+        const trimmed = possibleVal.trim();
+        if (trimmed.toLowerCase() === "today") bDateNormalized = todayStr;
+        else if (trimmed.length >= 8) {
+          const parsed = new Date(trimmed);
+          if (!isNaN(parsed.getTime())) bDateNormalized = formatDateToReadable(parsed);
+          else bDateNormalized = trimmed;
+        }
+      }
+
+      if (bDateNormalized !== todayStr) return false;
+
+      const custName = String(b.customer_name || b.name || "").toLowerCase();
+      if (custName.includes("walk-in") || custName.includes("admin block")) return false;
+
+      const statusStr = String(b.status || "").trim().toUpperCase();
+      if (statusStr === "REJECTED") return false;
+
+      // Check Expiry
+      const slotStr = b.slot_time || b.slot || b.time_slot || "";
+      if (!slotStr) return true;
+
+      try {
+        const timeParts = slotStr.split(/[-–\n]/);
+        const endTimeStr = (timeParts.length > 1 ? timeParts[1] : timeParts[0])?.trim() || "";
+        const match = endTimeStr.match(/(\d+):?(\d+)?\s*(AM|PM)/i);
+        if (!match || !match[1]) return true;
+
+        let hours = parseInt(match[1], 10);
+        const minutes = match[2] ? parseInt(match[2], 10) : 0;
+        const modifier = (match[3] || "").toUpperCase();
+
+        if (modifier === "PM" && hours < 12) hours += 12;
+        if (modifier === "AM" && hours === 12) hours = 0;
+
+        const now = new Date();
+        const slotEndTime = new Date();
+        slotEndTime.setHours(hours, minutes, 0, 0);
+
+        return now.getTime() < slotEndTime.getTime();
+      } catch {
+        return true;
+      }
     }).length;
   }, [mgr.bookings, isMounted]);
 
@@ -467,7 +534,7 @@ function Dashboard() {
             onClick={() => setShowLiveSessionsModal(true)}
           >
             <Activity className="size-4 mr-2 text-amber-400 animate-pulse" />
-            Live Sessions
+            Live Sessions : 
             {active > 0 && (
               <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-black text-white shadow-md">
                 {active}
@@ -564,8 +631,17 @@ function Dashboard() {
           >
             <CalendarClock className="size-4 mr-2.5 text-purple-300" />
             Online Bookings
+
+            {/* 🟢 Aaj ki active bookings ka live count badge */}
+            {todayActiveCount > 0 && (
+              <span className="ml-auto flex h-5 px-1.5 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-black text-white shadow-md">
+                {todayActiveCount} Active
+              </span>
+            )}
+
+            {/* 🛑 Yahan pehle pendingCount tha, ise pendingBookingsCount kar diya gaya hai */}
             {pendingBookingsCount > 0 && (
-              <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-black text-white shadow-md animate-pulse">
+              <span className={`flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-black text-white shadow-md animate-pulse ${todayActiveCount > 0 ? 'ml-1' : 'ml-auto'}`}>
                 {pendingBookingsCount}
               </span>
             )}
@@ -688,14 +764,11 @@ function Dashboard() {
             <FileText className="size-4 mr-2.5 text-red-400" /> Detailed Records
           </Button>
 
+
           {/* Live Sessions Management Modal */}
           <LiveSessionsModal
             open={showLiveSessionsModal}
             onOpenChange={setShowLiveSessionsModal}
-            sessions={mgr.sessions}
-            onLockSession={(stationId) => mgr.forceLock(stationId)}
-            onTogglePause={(stationId) => mgr.togglePause(stationId)}
-            onExtendSession={(stationId, mins) => mgr.extend(stationId, mins)}
           />
 
           <div className="border-t border-slate-800 my-1"></div>

@@ -55,7 +55,6 @@ def execute_pc_command(ip, action, station_id=""):
         try:
             logging.info(f"[PC CONTROL] Station: {station_id} | Target IP: {ip} | Action: {action}")
             if action in ["LOCK", "EXPIRE", "STOP", "SESSION_EXPIRE", "EXPIRE_LOCK", "END", "POWER_OFF"]:
-                # Check mapping by station name first if it's Truck, else by IP
                 cmd = None
                 if "TRUCK" in station_id.upper():
                     cmd = PC_SSH_CONFIGS.get("TRUCK")
@@ -221,7 +220,6 @@ def handle_control():
     if "PC" in station_id or "TRUCK" in station_id or ip in PC_SSH_CONFIGS:
         if action in ["START", "PLAY", "RESUME", "INIT", "UNLOCK", "POWER_ON"]:
             PC_STATES[station_id] = "UNLOCKED"
-            # Optional unlock behavior if needed, currently bypasses or handles lock
             return jsonify({"status": "success", "message": f"{station_id} UNLOCKED"}), 200
         elif action in ["LOCK", "EXPIRE", "SESSION_EXPIRE", "EXPIRE_LOCK", "STOP", "END", "POWER_OFF"]:
             PC_STATES[station_id] = "LOCKED"

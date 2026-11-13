@@ -527,16 +527,15 @@ export function StationCard({
                   <Lock className="size-3 mr-1" /> Lock
                 </Button>
 
-
                 <Button
-  size="sm"
-  variant="outline"
-  className="h-7 px-1 text-[10px] border-purple-800/80 bg-purple-950/80 text-purple-300 hover:bg-purple-600 hover:text-white font-bold w-full cursor-pointer"
-  title="Hide Screen with Image"
-  onClick={() => onControl(station.id, "HIDE", station.ip!)}
->
-  <EyeOff className="size-3 mr-1" /> HIDE
-</Button>
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-1 text-[10px] border-purple-800/80 bg-purple-950/80 text-purple-300 hover:bg-purple-600 hover:text-white font-bold w-full cursor-pointer"
+                  title="Hide Screen with Image"
+                  onClick={() => onControl(station.id, "HIDE", station.ip!)}
+                >
+                  <EyeOff className="size-3 mr-1" /> HIDE
+                </Button>
 
                 <Button
                   size="sm"

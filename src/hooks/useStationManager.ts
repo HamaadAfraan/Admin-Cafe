@@ -75,7 +75,6 @@ export function useStationManager() {
   const [bridgeUrl, setBridgeUrl] = useState(DEFAULT_BRIDGE_URL);
   const [sessions, setSessions] = useState<Record<string, Session>>({});
 
-  // 1. INITIALIZE BOOKINGS DIRECTLY FROM LOCALSTORAGE
   const [bookings, setBookings] = useState<BookingRequest[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -86,7 +85,6 @@ export function useStationManager() {
     }
   });
 
-  // 2. INITIALIZE WALKINS DIRECTLY FROM LOCALSTORAGE
   const [walkInSlots, setWalkInSlots] = useState<WalkInSlot[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -98,8 +96,6 @@ export function useStationManager() {
   });
 
   const processedSessionsRef = useRef<Set<string>>(new Set());
-
-  // 3. HISTORY STATE & SUPABASE SYNC
   const [history, setHistory] = useState<SessionRecord[]>([]);
 
   const fetchSessionHistory = useCallback(async () => {
@@ -259,7 +255,6 @@ export function useStationManager() {
     []
   );
 
-  // 1. START FUNCTION (Fixed syntax for slotTimeFormatted)
   const start = useCallback(
     async (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
       const now = Date.now();
@@ -543,30 +538,24 @@ export function useStationManager() {
     }
   }, []);
 
-  // 2. LOCK FUNCTION (Ensures Firebase deletion happens cleanly)
   const lock = useCallback(
     async (stationId: string, reason: "expired" | "forced") => {
-      let sessionToLock: Session | undefined;
-
       setSessions((prev) => {
-        sessionToLock = prev[stationId];
+        const sessionToLock = prev[stationId];
         if (!sessionToLock) return prev;
+
+        logSessionHistory(sessionToLock);
 
         const next = { ...prev };
         delete next[stationId];
         return next;
       });
 
-      if (sessionToLock) {
-        await logSessionHistory(sessionToLock);
-      }
-
-      // 🔴 Firebase se turant live session document delete karo
       try {
         const liveBookingDocId = `LIVE_SESSION_${stationId}`;
         await deleteDoc(doc(db, "bookings", liveBookingDocId));
       } catch (err) {
-        console.error("Failed to clear live session booking from Firebase:", err);
+        console.error("Failed to clear live session booking:", err);
       }
 
       fire(stationId, "LOCK");
@@ -579,11 +568,8 @@ export function useStationManager() {
     [fire, logSessionHistory]
   );
 
-  // 3. TIMER EFFECT (Triggers lock when remainingMs reaches 0)
   useEffect(() => {
     const timer = setInterval(() => {
-      const expiredStationIds: string[] = [];
-
       setSessions((prev) => {
         const keys = Object.keys(prev);
         if (keys.length === 0) return prev;
@@ -597,9 +583,14 @@ export function useStationManager() {
 
           const rem = s.remainingMs - 1000;
           if (rem <= 0) {
+            logSessionHistory({ ...s, remainingMs: 0 } as Session);
             delete next[id];
             changed = true;
-            expiredStationIds.push(id);
+            fire(id, "LOCK");
+            deleteDoc(doc(db, "bookings", `LIVE_SESSION_${id}`)).catch((err) =>
+              console.error("Failed to clear live session booking:", err)
+            );
+            toast.warning(`${id} session ended — TV Locked`);
           } else {
             next[id] = { ...s, remainingMs: rem };
             changed = true;
@@ -608,14 +599,10 @@ export function useStationManager() {
 
         return changed ? next : prev;
       });
-
-      expiredStationIds.forEach((id) => {
-        lock(id, "expired");
-      });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [lock]);
+  }, [fire, logSessionHistory]);
 
   const extend = useCallback(async (stationId: string, extraMins: number) => {
     const existing = sessions[stationId];
@@ -654,7 +641,6 @@ export function useStationManager() {
     try {
       const liveBookingDocId = `LIVE_SESSION_${stationId}`;
       const docRef = doc(db, "bookings", liveBookingDocId);
-      
       await updateDoc(docRef, {
         slot: updatedEndTimeStr,
         slot_time: updatedEndTimeStr,

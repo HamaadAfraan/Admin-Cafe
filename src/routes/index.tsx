@@ -138,7 +138,7 @@ function Dashboard() {
   const [cafePaymentCustomDate, setCafePaymentCustomDate] = useState("");
 
   const [showTimingModal, setShowTimingModal] = useState(false);
-  
+
   // 7 Days Timing States ("1" to "7" where 1=Mon ... 7=Sun)
   const [dayOpenTimes, setDayOpenTimes] = useState<Record<string, string>>({
     "1": "16:00", // Mon
@@ -235,7 +235,7 @@ function Dashboard() {
 
   const active = isMounted ? Object.keys(mgr.sessions || {}).length : 0;
 
-const pendingBookingsCount = useMemo(() => {
+  const pendingBookingsCount = useMemo(() => {
     if (!isMounted) return 0;
     const list = Array.isArray(mgr.bookings) ? mgr.bookings : [];
     return list.filter((b) => {
@@ -255,7 +255,7 @@ const pendingBookingsCount = useMemo(() => {
   const todayActiveCount = useMemo(() => {
     if (!isMounted) return 0;
     const list = Array.isArray(mgr.bookings) ? mgr.bookings : [];
-    
+
     const formatDateToReadable = (d) => {
       const day = String(d.getDate()).padStart(2, '0');
       const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
@@ -328,7 +328,13 @@ const pendingBookingsCount = useMemo(() => {
 
   const stats = [
     { label: "Total", value: String(stations.length), icon: MonitorSmartphone },
-    { label: "Idle", value: String(stations.length - active), icon: CircleDot },
+    { label: "Active", value: String(active), icon: Activity, tone: "warning" },
+    {
+      label: "Idle",
+      value: String(stations.length - active),
+      icon: CircleDot,
+      tone: "primary",
+    },
   ] as const;
 
   const historyLogs: SessionRecord[] = isMounted
@@ -512,35 +518,38 @@ const pendingBookingsCount = useMemo(() => {
 
         {/* Quick Stats & Live Sessions Button */}
         <div className="flex items-center gap-3">
-          {stats.map((s) => (
-            <div
-              key={s.label}
-              className="flex items-center gap-2.5 rounded-lg bg-slate-950/90 px-3.5 py-1.5 border border-red-800/80 shadow-inner"
-            >
-              <s.icon className="size-4 text-slate-400" />
-              <span className="text-xs font-bold text-slate-300 uppercase">{s.label}:</span>
-              <span className="font-mono text-sm font-bold text-white tabular-nums">{s.value}</span>
-            </div>
-          ))}
+          {stats.map((s) => {
+            const Component = s.label === "Active" ? "button" : "div";
+            const isActiveStat = s.label === "Active";
+            const hasValue = Number(s.value) > 0;
 
-          {/* Live Sessions Button with ml-auto style badge */}
-          <Button
-            variant="outline"
-            size="sm"
-            className={cn(
-              "relative border-amber-500/40 bg-amber-950/40 text-amber-200 hover:bg-amber-600 hover:text-white font-bold h-9 text-xs justify-start px-3 shadow-sm transition-all cursor-pointer",
-              active > 0 && "border-amber-400 bg-amber-600 text-white ring-2 ring-amber-400"
-            )}
-            onClick={() => setShowLiveSessionsModal(true)}
-          >
-            <Activity className="size-4 mr-2 text-amber-400 animate-pulse" />
-            Live Sessions : 
-            {active > 0 && (
-              <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-black text-white shadow-md">
-                {active}
-              </span>
-            )}
-          </Button>
+            return (
+              <Component
+                key={s.label}
+                {...(isActiveStat && {
+                  onClick: () => setShowLiveSessionsModal(true),
+                  type: "button",
+                })}
+                className={`flex items-center gap-2.5 rounded-lg bg-slate-950/90 px-3.5 py-1.5 border border-red-800/80 shadow-inner ${isActiveStat ? "cursor-pointer hover:bg-slate-900 transition-colors" : ""
+                  }`}
+              >
+                <s.icon
+                  className={`size-4 ${isActiveStat && hasValue
+                      ? "text-red-500 animate-pulse"
+                      : "text-slate-400"
+                    }`}
+                />
+                <span className="text-xs font-bold text-slate-300 uppercase">{s.label}:</span>
+                <span
+                  className={`font-mono text-sm font-bold tabular-nums ${isActiveStat && hasValue ? "text-red-400" : "text-white"
+                    }`}
+                >
+                  {s.value}
+                </span>
+              </Component>
+            );
+          })}
+
 
           <Button
             variant="outline"
@@ -548,7 +557,7 @@ const pendingBookingsCount = useMemo(() => {
             className="border-gray-800 bg-black text-gray-300 hover:bg-gray-900 hover:text-gray-100 font-bold h-9 text-xs justify-start px-3 shadow-sm transition-all cursor-pointer"
             onClick={() => setShowTimingModal(true)}
           >
-            <Clock className="size-4 mr-1 text-amber-400" /> 7-Day Hours
+            <Clock className="size-4 mr-1 text-amber-400" /> Cafe Time
           </Button>
         </div>
       </header>
@@ -1048,18 +1057,17 @@ const pendingBookingsCount = useMemo(() => {
                                 💎 +{p.cashback_diamonds} Diamonds
                               </span>
                             )}
-                            
+
                             <span className="font-black text-emerald-400 text-sm font-orbitron">
                               ₹{p.amount || 0}
                             </span>
 
                             {/* Status Badge & Admin Accept / Reject Actions */}
                             <div className="flex items-center gap-2">
-                              <span className={`text-[10px] font-mono font-bold px-2 py-1 rounded-full uppercase ${
-                                currentStatus === "APPROVED" ? 'bg-emerald-950 border border-emerald-500/40 text-emerald-300' :
+                              <span className={`text-[10px] font-mono font-bold px-2 py-1 rounded-full uppercase ${currentStatus === "APPROVED" ? 'bg-emerald-950 border border-emerald-500/40 text-emerald-300' :
                                 currentStatus === "REJECTED" ? 'bg-red-950 border border-red-500/40 text-red-300' :
-                                'bg-amber-950 border border-amber-500/40 text-amber-300 animate-pulse'
-                              }`}>
+                                  'bg-amber-950 border border-amber-500/40 text-amber-300 animate-pulse'
+                                }`}>
                                 {currentStatus}
                               </span>
 
@@ -1160,7 +1168,7 @@ const pendingBookingsCount = useMemo(() => {
                   <span className="text-xs font-bold font-mono text-amber-400 w-28 uppercase">
                     {day.label}
                   </span>
-                  
+
                   <div className="flex items-center gap-2 flex-1">
                     <div className="flex-1">
                       <label className="text-[10px] text-slate-400 block mb-1">Open Time</label>

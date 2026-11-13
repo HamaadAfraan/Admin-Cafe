@@ -85,19 +85,18 @@ export function useStationManager() {
     }
   });
 
-  const alertSound = typeof window !== "undefined" ? new Audio('/assets/4-sec.mp3') : null;
-const endSound = typeof window !== "undefined" ? new Audio('/assets/end.mp3') : null;
-
-if (alertSound) alertSound.volume = 0.5;
-if (endSound) endSound.volume = 1.0;
-
-function playAudioSafely(audioObj: HTMLAudioElement | null) {
-  if (!audioObj) return;
-  audioObj.currentTime = 0; // Reset to start
-  audioObj.play().catch((err) => {
-    console.warn("Audio autoplay blocked by browser. User interaction required once on page:", err);
-  });
-}
+  function playSafeAudio(fileName: string, volume: number = 1.0) {
+    try {
+      // Vercel par base URL ya relative path safely handle karne ke liye
+      const audio = new Audio(`./assets/${fileName}`);
+      audio.volume = Math.max(0, Math.min(1, volume));
+      audio.play().catch((err) => {
+        console.warn("Audio play blocked or missing:", err);
+      });
+    } catch (e) {
+      console.warn("Audio error:", e);
+    }
+  }
 
   const [walkInSlots, setWalkInSlots] = useState<WalkInSlot[]>(() => {
     if (typeof window === "undefined") return [];
@@ -269,7 +268,7 @@ function playAudioSafely(audioObj: HTMLAudioElement | null) {
     []
   );
 
-  
+
 
   const start = useCallback(
     async (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
@@ -601,12 +600,11 @@ function playAudioSafely(audioObj: HTMLAudioElement | null) {
 
           // 1st Call: 4 seconds baaki rehne par
           if (rem === 4000 || (rem <= 4000 && rem > 3000)) {
-  playAudioSafely(alertSound);
-}
+            playSafeAudio('4-sec.mp3', 0.5);
+          }
           if (rem <= 0) {
             // 2nd Call: Time 0 (end) hone par
-            playAudioSafely(endSound);
-            logSessionHistory({ ...s, remainingMs: 0 } as Session);
+            playSafeAudio('end.mp3', 1.0); logSessionHistory({ ...s, remainingMs: 0 } as Session);
             delete next[id];
             changed = true;
             fire(id, "LOCK");

@@ -84,19 +84,20 @@ export function useStationManager() {
       return [];
     }
   });
+  
 
   function playSafeAudio(fileName: string, volume: number = 1.0) {
-    try {
-      // Vercel par base URL ya relative path safely handle karne ke liye
-      const audio = new Audio(`./assets/${fileName}`);
-      audio.volume = Math.max(0, Math.min(1, volume));
-      audio.play().catch((err) => {
-        console.warn("Audio play blocked or missing:", err);
-      });
-    } catch (e) {
-      console.warn("Audio error:", e);
-    }
+  try {
+    // Vercel / Public folder ke liye absolute slash lagayein
+    const audio = new Audio(`/assets/${fileName}`);
+    audio.volume = Math.max(0, Math.min(1, volume));
+    audio.play().catch((err) => {
+      console.warn("Audio play blocked or missing:", err);
+    });
+  } catch (e) {
+    console.warn("Audio error:", e);
   }
+}
 
   const [walkInSlots, setWalkInSlots] = useState<WalkInSlot[]>(() => {
     if (typeof window === "undefined") return [];

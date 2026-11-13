@@ -84,20 +84,18 @@ export function useStationManager() {
       return [];
     }
   });
-  
 
-  function playSafeAudio(fileName: string, volume: number = 1.0) {
-  try {
-    // Vercel / Public folder ke liye absolute slash lagayein
-    const audio = new Audio(`/assets/${fileName}`);
-    audio.volume = Math.max(0, Math.min(1, volume));
-    audio.play().catch((err) => {
-      console.warn("Audio play blocked or missing:", err);
-    });
-  } catch (e) {
-    console.warn("Audio error:", e);
+  function playSafeAudio(audioUrl: string, volume: number = 1.0) {
+    try {
+      const audio = new Audio(audioUrl);
+      audio.volume = Math.max(0, Math.min(1, volume));
+      audio.play().catch((err) => {
+        console.warn("Audio play blocked or missing:", err);
+      });
+    } catch (e) {
+      console.warn("Audio error:", e);
+    }
   }
-}
 
   const [walkInSlots, setWalkInSlots] = useState<WalkInSlot[]>(() => {
     if (typeof window === "undefined") return [];
@@ -601,12 +599,13 @@ export function useStationManager() {
 
           // 1st Call: 4 seconds baaki rehne par
           if (rem === 4000 || (rem <= 4000 && rem > 3000)) {
-            playSafeAudio('4-sec.mp3', 0.5);
+            if (rem === 4000 || (rem <= 4000 && rem > 3000)) {
+              playSafeAudio('https://res.cloudinary.com/fxg5jmee/video/upload/v1794602972/4-sec.mp3', 0.5);
+            }
           }
           if (rem <= 0) {
             // 2nd Call: Time 0 (end) hone par
-            playSafeAudio('end.mp3', 1.0); logSessionHistory({ ...s, remainingMs: 0 } as Session);
-            delete next[id];
+            playSafeAudio('https://res.cloudinary.com/fxg5jmee/video/upload/v1794602972/end.mp3', 1.0); delete next[id];
             changed = true;
             fire(id, "LOCK");
             deleteDoc(doc(db, "bookings", `LIVE_SESSION_${id}`)).catch((err) =>

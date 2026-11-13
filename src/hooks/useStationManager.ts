@@ -255,6 +255,18 @@ export function useStationManager() {
     []
   );
 
+  function playAudioFile(filePath: string, volumeLevel: number = 1.0) {
+  try {
+    const audio = new Audio(filePath);
+    audio.volume = Math.max(0, Math.min(1, volumeLevel)); // 0.0 se 1.0 ke beech clamp karega
+    audio.play().catch((err) => {
+      console.warn(`Audio play blocked or file not found (${filePath}):`, err);
+    });
+  } catch (e) {
+    console.warn("Failed to play custom sound:", e);
+  }
+}
+
   const start = useCallback(
     async (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
       const now = Date.now();
@@ -306,7 +318,7 @@ export function useStationManager() {
         utr: "WALKIN-CASH",
         bookingDate: todayIsoDate,
         category: targetCategory,
-        station_id: "", 
+        station_id: "",
         stationId: "",
         platform: targetCategory,
         screen: targetScreen,
@@ -582,7 +594,13 @@ export function useStationManager() {
           if (s.paused) continue;
 
           const rem = s.remainingMs - 1000;
+          // 1st Call: 4 seconds baaki rehne par
+          if (rem === 4000 || (rem <= 4000 && rem > 3000)) {
+            playAudioFile('/assets/4-sec.mp3', 0.5);
+          }
           if (rem <= 0) {
+            // 2nd Call: Time 0 (end) hone par
+            playAudioFile('/assets/end.mp3', 1.0);
             logSessionHistory({ ...s, remainingMs: 0 } as Session);
             delete next[id];
             changed = true;
@@ -621,7 +639,7 @@ export function useStationManager() {
 
     const formatTimeWithZero = (tStr: string) => tStr.replace(/\b(\d):/g, "0$1:");
     const updatedEndTimeStr = `${formatTimeWithZero(startTimeStr)} - ${formatTimeWithZero(endTimeStr)}`;
-    
+
     const totalMinutes = Math.round(newTotalMs / 60_000);
     const updatedDurationStr = `${totalMinutes} mins`;
 

@@ -269,10 +269,11 @@ export function useStationManager() {
 
 
 
-  const start = useCallback(
+const start = useCallback(
     async (stationId: string, minutes: number, customer: string, playerCount: number = 1) => {
       const now = Date.now();
       const totalMs = minutes * 60_000;
+      const expiresAt = now + totalMs; // 🔴 Exact millisecond expiry timestamp
       const startDateObj = new Date(now);
       const endDateObj = new Date(now + totalMs);
 
@@ -333,7 +334,8 @@ export function useStationManager() {
         amount: 0,
         status: "APPROVED",
         createdAt: startDateObj.toISOString(),
-        created_at: startDateObj.toISOString()
+        created_at: startDateObj.toISOString(),
+        expiresAt: expiresAt, // 🔴 Firebase mein exact expiry save hogi
       };
 
       try {
@@ -582,6 +584,7 @@ export function useStationManager() {
     [fire, logSessionHistory]
   );
 
+// Timer Effect with safety guard for 's'
   useEffect(() => {
     const timer = setInterval(() => {
       setSessions((prev) => {
@@ -593,19 +596,19 @@ export function useStationManager() {
 
         for (const id of keys) {
           const s = next[id];
-          if (s.paused) continue;
+          if (!s || s.paused) continue; // 👈 Fixed 's' possibly undefined error
 
           const rem = s.remainingMs - 1000;
 
-          // 1st Call: 4 seconds baaki rehne par
           if (rem === 4000 || (rem <= 4000 && rem > 3000)) {
-            if (rem === 4000 || (rem <= 4000 && rem > 3000)) {
-              playSafeAudio('https://res.cloudinary.com/fxg5jmee/video/upload/v1794602972/4-sec.mp3', 0.5);
-            }
+            playSafeAudio('https://res.cloudinary.com/fxg5jmee/video/upload/v1794602972/4-sec.mp3', 0.5);
           }
+
           if (rem <= 0) {
-            // 2nd Call: Time 0 (end) hone par
-            playSafeAudio('https://res.cloudinary.com/fxg5jmee/video/upload/v1794602972/end.mp3', 1.0); delete next[id];
+            playSafeAudio('https://res.cloudinary.com/fxg5jmee/video/upload/v1794602972/end.mp3', 1.0);
+            logSessionHistory(s);
+
+            delete next[id];
             changed = true;
             fire(id, "LOCK");
             deleteDoc(doc(db, "bookings", `LIVE_SESSION_${id}`)).catch((err) =>
@@ -633,8 +636,12 @@ export function useStationManager() {
     const newTotalMs = (existing.totalMs || 0) + addMs;
     const newRemainingMs = (existing.remainingMs || 0) + addMs;
 
-    const startTimeMs = existing.startedAt || existing.startTime || Date.now();
-    const newEndDateObj = new Date(startTimeMs + newTotalMs);
+    // 🔴 Fixed TypeScript arithmetic operator error by converting to number safely
+    const rawStart = existing.startedAt || existing.startTime || Date.now();
+    const startTimeMs = typeof rawStart === "string" ? new Date(rawStart).getTime() : Number(rawStart) || Date.now();
+    
+    const newExpiresAt = startTimeMs + newTotalMs;
+    const newEndDateObj = new Date(newExpiresAt);
     const startDateObj = new Date(startTimeMs);
 
     const startTimeStr = startDateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
@@ -665,7 +672,8 @@ export function useStationManager() {
       await updateDoc(docRef, {
         slot: updatedEndTimeStr,
         slot_time: updatedEndTimeStr,
-        duration: updatedDurationStr
+        duration: updatedDurationStr,
+        expiresAt: newExpiresAt // 🔴 Update extension expiry in Firebase too
       });
     } catch (err) {
       console.error("Failed to update extended time in Firebase:", err);

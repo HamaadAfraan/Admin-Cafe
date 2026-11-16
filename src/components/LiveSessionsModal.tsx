@@ -62,9 +62,48 @@ function getStationConfig(stationId: string, category: string, screen: string) {
   };
 }
 
-// Check if session slot time has expired
-const isSessionExpired = (slotStr: string): boolean => {
+// Check if session has strictly expired using exact expiresAt timestamp
+const isSessionExpired = (data: any): boolean => {
+  if (data?.expiresAt) {
+    return Date.now() >= Number(data.expiresAt);
+  }
+  
+  // Fallback string parsing if expiresAt is missing
+  const slotStr = data.slot_time || data.slot || "";
   if (!slotStr || !slotStr.includes("-")) return false;
+  try {
+    const parts = slotStr.split("-");
+    const endTimeStr = parts[1]?.trim() || "";
+
+    const match = endTimeStr.match(/(\d+):?(\d+)?\s*(AM|PM)/i);
+    if (match && match[1]) {
+      let hours = parseInt(match[1], 10);
+      const minutes = match[2] ? parseInt(match[2], 10) : 0;
+      const modifier = (match[3] || "").toUpperCase();
+
+      if (modifier === "PM" && hours < 12) hours += 12;
+      if (modifier === "AM" && hours === 12) hours = 0;
+
+      const now = new Date();
+      const slotEndTime = new Date();
+      slotEndTime.setHours(hours, minutes, 0, 0);
+
+      return now.getTime() >= slotEndTime.getTime();
+    }
+  } catch (e) {
+    // Parsing fallback
+  }
+  return false;
+};
+
+// Helper to get session end time in milliseconds for sorting
+const getSessionEndTimestamp = (data: any): number => {
+  if (data?.expiresAt) {
+    return Number(data.expiresAt);
+  }
+
+  const slotStr = data.slot_time || data.slot || "";
+  if (!slotStr || !slotStr.includes("-")) return Number.MAX_SAFE_INTEGER;
   try {
     const parts = slotStr.split("-");
     const endTimeStr = parts[1]?.trim() || "";
@@ -81,12 +120,12 @@ const isSessionExpired = (slotStr: string): boolean => {
       const slotEndTime = new Date();
       slotEndTime.setHours(hours, minutes, 0, 0);
 
-      return new Date().getTime() >= slotEndTime.getTime();
+      return slotEndTime.getTime();
     }
   } catch (e) {
     // Parsing fallback
   }
-  return false;
+  return Number.MAX_SAFE_INTEGER;
 };
 
 export function LiveSessionsModal({ open, onOpenChange }: Props) {
@@ -142,10 +181,16 @@ export function LiveSessionsModal({ open, onOpenChange }: Props) {
         }
       }
 
-      // Sort: Active/Live ones first, Expired/Ended ones at the very bottom
+      // 🔴 SORTING UPDATE: 
+      // 1. Active sessions pehle, expired sessions neeche.
+      // 2. Active sessions mein jo sabse pehle khatam (end) hone wala hai, woh sabse upar aayega (Earliest end time first).
       liveList.sort((a, b) => {
-        if (a.isExpired === b.isExpired) return 0;
-        return a.isExpired ? 1 : -1;
+        if (a.isExpired !== b.isExpired) {
+          return a.isExpired ? 1 : -1;
+        }
+        const endA = getSessionEndTimestamp(a.slot_time || a.slot || "");
+        const endB = getSessionEndTimestamp(b.slot_time || b.slot || "");
+        return endA - endB;
       });
 
       setDbLiveBookings(liveList);
@@ -213,7 +258,7 @@ export function LiveSessionsModal({ open, onOpenChange }: Props) {
           </div>
         </div>
 
-        {/* Sessions List with Auto-Sorting (Live top, Expired bottom) */}
+        {/* Sessions List with Auto-Sorting (Ending soonest at the top) */}
         <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 py-1">
           {filteredSessions.length === 0 ? (
             <div className="text-center py-12 text-slate-500 text-sm">
@@ -238,11 +283,10 @@ export function LiveSessionsModal({ open, onOpenChange }: Props) {
               return (
                 <div
                   key={b.dbId}
-                  className={`flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-xl border transition-all gap-3 text-xs ${
-                    expired
-                      ? "border-red-500/40 bg-red-950/20 opacity-75"
-                      : "border-amber-500/30 bg-slate-900/80"
-                  }`}
+                  className={`flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-xl border transition-all gap-3 text-xs ${expired
+                    ? "border-red-500/40 bg-red-950/20 opacity-75"
+                    : "border-amber-500/30 bg-slate-900/80"
+                    }`}
                 >
                   <div className="flex items-center gap-3.5">
                     <div className={`grid size-10 place-items-center rounded-lg border ${iconTheme} font-bold shrink-0`}>
@@ -276,7 +320,7 @@ export function LiveSessionsModal({ open, onOpenChange }: Props) {
                         <span className="flex items-center gap-1 text-cyan-300">
                           <Clock className="size-3.5 text-cyan-400" /> Slot: {slotTime}
                         </span>
-                        <span>• Duration: <strong className="text-slate-200">{duration}</strong></span>
+                        <span>Duration: <strong className="text-slate-200">{duration}</strong></span>
                       </div>
                     </div>
                   </div>

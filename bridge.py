@@ -31,13 +31,12 @@ PC_STATES = {
     "PC-2": "LOCKED",
     "TRUCK": "LOCKED"
 }
-
-# --- Specific SSH Scheduled Task Lock Mapping ---
 PC_SSH_CONFIGS = {
-    "192.168.1.50": 'sshpass -p \'3313\' ssh Stranger@192.168.1.50 "psexec -accepteula -s -i 1 -d C:\\Windows\\System32\\rundll32.exe user32.dll,LockWorkStation"',
-    "192.168.1.51": 'sshpass -p \'3313\' ssh Stranger@192.168.1.51 "schtasks /run /tn LockMyPC"',
-    "TRUCK": 'sshpass -p \'3313\' ssh Stranger@192.168.1.50 "psexec -accepteula -s -i 2 -d C:\\Windows\\System32\\rundll32.exe user32.dll,LockWorkStation"'
+"192.168.1.50": 'sshpass -p 3313 ssh Stranger@192.168.1.50 "psexec -accepteula -s -i -d C:\\Windows\\system32\\rundll32.exe user32.dll,LockWorkStation"',
+"192.168.1.51": 'sshpass -p 3313 ssh Stranger@192.168.1.51 "schtasks /run /tn LockMyPC"',
+"TRUCK": 'sshpass -p 3313 ssh Stranger@192.168.1.50 "psexec -accepteula -s -i -d C:\\Windows\\system32\\rundll32.exe user32.dll,LockWorkStation"'
 }
+
 
 def get_local_ip():
     try:

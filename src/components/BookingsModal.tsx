@@ -458,20 +458,21 @@ export function BookingsModal({
     );
   }, [localBookings]);
 
-  // Pre-defined mandatory Console tabs + any other dynamically found ones
   const availableConsoles = useMemo(() => {
     const defaultConsoles = [
-      'PS5 (43" Standard)',
-      'PS5 (55" 4K)',
-      'PS4',
       'Racing Simulator',
+      'PS5 (55" VIP)',
+      'PS5 (43" Standard)',
+      'PS4',
       'Truck Simulator',
-      'Gaming PC'
+      'Gaming PC',
     ];
     const set = new Set<string>(defaultConsoles);
     safeBookings.forEach((b) => {
       const label = getConsoleLabel(b);
-      if (label && label !== "Other") set.add(label);
+      if (label && label !== "Other" && !label.includes('55" 4K')) {
+        set.add(label);
+      }
     });
     return ["ALL", ...Array.from(set)];
   }, [safeBookings]);
@@ -511,14 +512,19 @@ export function BookingsModal({
     const effectiveStatus = isWalkInBooking(b) ? "APPROVED" : String(b.status).toUpperCase();
     const expired = (effectiveStatus === "APPROVED" || effectiveStatus === "CONFIRMED") && isBookingSlotExpired(b);
 
+    const isPastBooking = isBookingSlotExpired(b);
+
     if (filter === "PAST") {
-      matchesFilter = expired;
+      matchesFilter = isPastBooking;
+    } else if (filter === "ALL") {
+      // ALL tab mein past/expired bookings nahi dikhengi
+      matchesFilter = !isPastBooking;
     } else if (filter === "TODAY") {
-      matchesFilter = bDateNormalized === todayStr;
+      matchesFilter = bDateNormalized === todayStr && !isPastBooking;
     } else if (filter === "TOMORROW") {
       matchesFilter = bDateNormalized === tomStr;
-    } else if (filter !== "ALL") {
-      matchesFilter = effectiveStatus === filter;
+    } else {
+      matchesFilter = effectiveStatus === filter && !isPastBooking;
     }
 
     // Console / Platform match (flexible partial checking for 43", 55", ps4, sim, truck, pc)
@@ -602,7 +608,7 @@ export function BookingsModal({
     return String(a.id || "").localeCompare(String(b.id || ""));
   });
 
-const pendingCount = safeBookings.filter((b) => {
+  const pendingCount = safeBookings.filter((b) => {
     if (isWalkInBooking(b)) return false;
     return String(b?.status).toUpperCase() === "PENDING";
   }).length;
@@ -718,8 +724,12 @@ const pendingCount = safeBookings.filter((b) => {
                     size="sm"
                     variant={filter === st ? "default" : "outline"}
                     className={`text-[11px] font-bold cursor-pointer h-8 px-2.5 ${filter === st
-                      ? st === "PAST" ? "bg-slate-700 text-white hover:bg-slate-600" : "bg-amber-500 text-black hover:bg-amber-400"
-                      : "bg-slate-900 border-slate-700 text-slate-300"
+                        ? st === "PAST"
+                          ? "bg-red-600 text-white hover:bg-red-500 border-red-500"
+                          : "bg-amber-500 text-black hover:bg-amber-400"
+                        : st === "PAST"
+                          ? "bg-red-950/40 border-red-500/40 text-red-300 hover:bg-red-950/70"
+                          : "bg-slate-900 border-slate-700 text-slate-300"
                       }`}
                     onClick={() => setFilter(st)}
                   >
@@ -791,14 +801,17 @@ const pendingCount = safeBookings.filter((b) => {
                 const displayGame = getGameLabel(b);
                 const customerName = b.customer_name || b.name || b.customer || (isWalkIn ? "Walk-In Customer" : "Customer");
                 const bookingDay = extractBookingDay(b);
-                const isExpired = (statusStr === "APPROVED" || statusStr === "CONFIRMED") && isBookingSlotExpired(b);
+                const isExpired = isBookingSlotExpired(b);
                 const displayAmount = b.price || b.amount || b.total_amount || 0;
-
                 return (
                   <div
                     key={`${b.id}-${index}`}
                     onClick={() => setSelectedBooking(b)}
-                    className="flex items-center justify-between gap-3 p-3 rounded-xl border border-slate-800/80 bg-slate-900/70 hover:border-amber-500/50 hover:bg-slate-900 transition-all cursor-pointer group"
+                    className={`flex items-center justify-between gap-3 p-3 rounded-xl border transition-all cursor-pointer group ${
+                      isExpired
+                        ? "border-red-500/50 bg-red-950/30 hover:border-red-400 hover:bg-red-950/50"
+                        : "border-slate-800/80 bg-slate-900/70 hover:border-amber-500/50 hover:bg-slate-900"
+                    }`}
                   >
                     <div className="flex items-center gap-3.5 flex-1 min-w-0">
                       <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-amber-400 group-hover:scale-105 transition-transform shrink-0">
@@ -828,14 +841,15 @@ const pendingCount = safeBookings.filter((b) => {
                           )}
 
                           <Badge
-                            className={`text-[9px] font-black uppercase px-1.5 py-0.5 ${statusStr === "PENDING"
-                              ? "bg-purple-950 border-purple-500 text-purple-300 animate-pulse"
-                              : (statusStr === "APPROVED" || statusStr === "CONFIRMED")
-                                ? isExpired
-                                  ? "bg-slate-800 border-slate-600 text-slate-400"
-                                  : "bg-emerald-950 border-emerald-500 text-emerald-300"
-                                : "bg-red-950 border-red-500 text-red-300"
-                              }`}
+                            className={`text-[9px] font-black uppercase px-1.5 py-0.5 ${
+                              isExpired
+                                ? "bg-red-950 border-red-500 text-red-300"
+                                : statusStr === "PENDING"
+                                  ? "bg-purple-950 border-purple-500 text-purple-300 animate-pulse"
+                                  : statusStr === "APPROVED" || statusStr === "CONFIRMED"
+                                    ? "bg-emerald-950 border-emerald-500 text-emerald-300"
+                                    : "bg-red-950 border-red-500 text-red-300"
+                            }`}
                           >
                             {isExpired ? "PAST" : statusStr}
                           </Badge>
